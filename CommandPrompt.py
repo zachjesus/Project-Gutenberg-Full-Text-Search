@@ -21,7 +21,7 @@ class ConsoleSearch:
         s = s.strip()
         if not s:
             return None, None
-        # Parse queries like: author: Herman subject: scifi
+        # Parse queries as "book: 'Guide' subject: 'Philosophy' etc..."
         tokens = re.findall(r'(\w+):\s*([^\s][^:]*?)(?=\s+\w+:|$)', s)
         fields = []
         query_parts = []
@@ -32,7 +32,7 @@ class ConsoleSearch:
                 query_parts.append(value.strip())
         if fields and query_parts:
             return fields, " ".join(query_parts)
-        # fallback to original logic
+        # Allows for queries like "book, subject, attribute: "
         if ":" in s:
             left, right = s.split(":", 1)
             tokens = [t.strip().lower() for t in left.split(",") if t.strip()]
