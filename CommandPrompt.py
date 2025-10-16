@@ -6,6 +6,12 @@ from FullTextSearch import FullTextSearch
 locale.setlocale(locale.LC_ALL, "")
 
 ALLOWED_FIELDS = {"book", "author", "subject", "attribute", "bookshelf"}
+SEARCH_FIELDS = {"book", "author", "subject", "attribute", "bookshelf", "title"}
+FILTER_FIELDS = {
+    "downloads", "downloads_min", "downloads_max",
+    "release_date", "release_date_min", "release_date_max",
+    "copyrighted"
+}
 
 class ConsoleSearch:
     def __init__(self):
@@ -20,26 +26,32 @@ class ConsoleSearch:
     def parse_query(self, s):
         s = s.strip()
         if not s:
-            return None, None
-        # Parse queries as "book: 'Guide' subject: 'Philosophy' etc..."
+            return None, None, None
+
+        # Find all key-value pairs (field: value)
         tokens = re.findall(r'(\w+):\s*([^\s][^:]*?)(?=\s+\w+:|$)', s)
-        fields = []
+        filters = {}
+        search_fields = []
         query_parts = []
+
         for field, value in tokens:
             field = field.lower()
-            if field in ALLOWED_FIELDS:
-                fields.append(field)
-                query_parts.append(value.strip())
-        if fields and query_parts:
-            return fields, " ".join(query_parts)
-        # Allows for queries like "book, subject, attribute: "
-        if ":" in s:
-            left, right = s.split(":", 1)
-            tokens = [t.strip().lower() for t in left.split(",") if t.strip()]
-            fields = [t for t in tokens if t in ALLOWED_FIELDS]
-            query = right.strip()
-            return (fields if fields else None), query
-        return None, s
+            value = value.strip()
+            if field in SEARCH_FIELDS:
+                search_fields.append(field)
+                query_parts.append(value)
+            elif field in FILTER_FIELDS:
+                filters[field] = value
+
+        # If only filters, return filters
+        if filters and not query_parts:
+            return None, None, filters
+        # If search fields, return search_fields and query_text, plus filters if any
+        if search_fields and query_parts:
+            return search_fields, " ".join(query_parts), filters if filters else None
+
+        # Fallback: treat whole string as query_text
+        return None, s, None
 
     def fetch(self, page):
         try:
@@ -112,12 +124,18 @@ class ConsoleSearch:
             if ch in (27,):  # ESC
                 break
             elif ch in (curses.KEY_ENTER, 10, 13):
-                self.fields, self.query_text = self.parse_query(self.query_input)
-                if not self.query_text:
+                self.fields, self.query_text, self.filters = self.parse_query(self.query_input)
+                if not self.query_text and not self.filters:
                     self.status = "enter a query"
                     continue
                 self.page = 1
-                res = self.fetch(self.page)
+                res = self.fts.ranked_fulltext_search(
+                    query_text=self.query_text or "",
+                    limit=self.limit,
+                    search_fields=self.fields,
+                    page=self.page,
+                    filters=self.filters
+                )
                 if res is not None:
                     self.results = res
                     self.status = f"{len(self.results)} results"
