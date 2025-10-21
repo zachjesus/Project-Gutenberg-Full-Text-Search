@@ -12,7 +12,7 @@ from libgutenberg.Models import (
 )
 from sqlalchemy import func, desc, distinct, literal, asc
 
-def apply_filter(query, filter_dict, already_joined=None):
+def apply_filter_rewrite(query, filter_dict, already_joined=None):
     already_joined = already_joined or set()
     col_map = {
         'title': Book.title,
@@ -72,7 +72,7 @@ class FullTextSearch:
 
             if not query_text:
                 base_query = session.query(Book).select_from(Book)
-                filtered_query = apply_filter(base_query, filters)
+                filtered_query = apply_filter_rewrite(base_query, filters)
                 pk_q = (
                     filtered_query
                     .with_entities(Book.pk)
@@ -152,7 +152,7 @@ class FullTextSearch:
 
             def make_q(base_query, tsvec_col, weight_letter, match_type):
                 joined = {match_type} if match_type != 'book' else set()
-                filtered_query = apply_filter(base_query, filters, already_joined=joined)
+                filtered_query = apply_filter_rewrite(base_query, filters, already_joined=joined)
                 return (
                     filtered_query
                     .with_entities(
@@ -249,5 +249,5 @@ class FullTextSearch:
 
 if __name__ == '__main__':
     fts = FullTextSearch()
-    results = fts.ranked_fulltext_search('', limit=10, page=1, filters={'downloads_min': 10000})
+    results = fts.ranked_fulltext_search('', limit=20, page=1, filters={'downloads_min': 10000})
     print(results)

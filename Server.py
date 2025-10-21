@@ -1,5 +1,5 @@
 import cherrypy
-from FullTextSearch import FullTextSearch
+from FullTextSearchRewrite import FullTextSearch
 
 class API:
     def __init__(self):
@@ -25,24 +25,7 @@ class API:
             page=page
         )
 
-        def row_to_dict(r):
-            return {
-                "pk": getattr(r, "pk", None),
-                "title": getattr(r, "title", None),
-                "downloads": getattr(r, "downloads", 0),
-                "release_date": str(getattr(r, "release_date", "")),
-                "text_rank": getattr(r, "text_rank", 0.0),
-                "total_rank": getattr(r, "total_rank", 0.0),
-                "match_types": getattr(r, "match_types", []),
-            }
-
-        return {
-            "query": query,
-            "page": page,
-            "limit": limit,
-            "fields": search_fields or [],
-            "results": [row_to_dict(r) for r in results]
-        }
+        return results
 
 if __name__ == "__main__":
     cherrypy.quickstart(API(), "/")
