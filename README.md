@@ -7,8 +7,6 @@ Then you can run the server or command prompt to interface with the full text se
 
 The full text search supports some [basic web operators](https://www.postgresql.org/docs/current/textsearch-controls.html#TEXTSEARCH-PARSING-QUERIES).
 
-Command prompt app is easy to interface with for quality testing. 
-
 Server can be accessed like http://127.0.0.1:8080/search?query=shakespeare&page=2&limit=5&fields=title,author if running locally.
 
 Next features will be (1) updating the search to allow facet searching (2) Then making the server OPDS spec. 
