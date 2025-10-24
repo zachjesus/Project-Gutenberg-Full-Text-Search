@@ -285,3 +285,8 @@ class FullTextSearch:
 
         finally:
             session.close()
+
+import pprint
+if __name__ == '__main__':
+    fts = FullTextSearch()
+    pprint.pprint(fts.ranked_fulltext_search('Computer', limit=10, search_fields=['book'], page=1, filters={'copyrighted': 1}))
