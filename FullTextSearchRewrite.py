@@ -124,7 +124,6 @@ def apply_trgm_filter(query, facet, value):
         print(f"Error in trgm filter: {e}")
         return query
 
-
 def apply_filters(query, filter_dict):
     """Apply all filters from filter_dict to the query."""
     for filter_key, filter_value in filter_dict.items():
@@ -178,24 +177,56 @@ class FullTextSearch:
         self.ob = GutenbergDatabase.Objectbase(False)
 
     def get_facets_for_book(self, book):
-        """Return a dict of all facet values for a Book instance."""
+        """Return a dict of all facet values for a Book instance, fully unpacked."""
         result = {}
-        for key, facet in FACETS.items():
-            try:
-                if facet.relation:
-                    rel = getattr(book, facet.relation)
-                    if isinstance(rel, list):
-                        result[key] = [getattr(obj, facet.column) for obj in rel]
-                    else:
-                        result[key] = getattr(rel, facet.column)
-                else:
-                    result[key] = getattr(book, facet.column.key)
-            except Exception as e:
-                result[key] = None
 
         result['pk'] = book.pk
         result['title'] = book.title
-        
+        result['downloads'] = book.downloads
+        result['copyrighted'] = book.copyrighted
+        result['release_date'] = book.release_date.isoformat() if book.release_date else None
+        result['rights'] = book.rights
+
+        result['authors'] = [{
+            'name': ba.name,
+            'role': ba.role,
+            'birthdate': getattr(ba, 'birthdate', None),
+            'deathdate': getattr(ba, 'deathdate', None),
+            'aliases': [alias.alias for alias in getattr(ba, 'aliases', [])],
+            'webpages': [url.url for url in getattr(ba, 'webpages', [])],
+        } for ba in book.authors]
+
+        result['languages'] = [lang.language for lang in book.langs]
+
+        result['loc_class'] = [locc.locc for locc in book.loccs]
+
+        result['bookshelves'] = [shelf.bookshelf for shelf in book.bookshelves]
+
+        result['dcmi_type'] = [cat.dcmitype for cat in book.categories if hasattr(cat, 'dcmitype')]
+
+        result['subjects'] = [subj.subject for subj in book.subjects]
+
+        result['attributes'] = [{
+            'text': attr.text,
+            'type': attr.attribute_type.name if attr.attribute_type else None,
+            'lang': attr.lang.language if attr.lang else None,
+            'caption': attr.attribute_type.caption if attr.attribute_type and hasattr(attr.attribute_type, 'caption') else None,
+        } for attr in book.attributes]
+
+        result['files'] = [{
+            'filename': f.archive_path,
+            'filetype': f.file_type.filetype if f.file_type else None,
+            'mediatype': f.file_type.mediatype if f.file_type else None,
+            'encoding': f.encoding_type.pk if f.encoding_type else None,
+            'compression': f.compression_type.compression if f.compression_type else None,
+            'size': f.hr_extent,
+            'modified': f.modified.isoformat() if f.modified else None,
+            'generated': f.generated,
+            'edition': f.edition if hasattr(f, 'edition') else None,
+            'download': f.download if hasattr(f, 'download') else None,
+            'download_url': f"https://www.gutenberg.org/{f.archive_path}" if f.archive_path else None,
+        } for f in book.files]
+
         return result
 
     def ranked_fulltext_search(self, query_text, limit=100, search_fields=None, page=1, filters=None):
@@ -289,4 +320,4 @@ class FullTextSearch:
 import pprint
 if __name__ == '__main__':
     fts = FullTextSearch()
-    pprint.pprint(fts.ranked_fulltext_search('Computer', limit=10, search_fields=['book'], page=1, filters={'copyrighted': 1}))
+    pprint.pprint(fts.ranked_fulltext_search('Computer', limit=10, search_fields=['book'], page=1, filters={'copyrighted': 1})[0])
