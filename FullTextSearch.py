@@ -1,8 +1,8 @@
 """Simple FTS using mv_books_dc materialized view with query builder."""
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Literal, Callable
-from enum import IntEnum
+from typing import Any, Literal
+from enum import IntEnum, Enum
 from sqlalchemy import text, create_engine
 from sqlalchemy.orm import sessionmaker
 import time
@@ -23,6 +23,46 @@ class _Priority(IntEnum):
     BTREE = 4
     DATE = 5
     GIN = 6
+
+
+class FileType(str, Enum):
+    """Available file types for filtering."""
+    EPUB = "application/epub+zip"
+    KINDLE = "application/x-mobipocket-ebook"
+    TXT = "text/plain"
+    HTML = "text/html"
+    PDF = "application/pdf"
+    RDF = "application/rdf+xml"
+    MP3 = "audio/mpeg"
+    OGG = "audio/ogg"
+    M4A = "audio/mp4"
+    MIDI = "audio/midi"
+    WAV = "audio/x-wav"
+    JPEG = "image/jpeg"
+    PNG = "image/png"
+    GIF = "image/gif"
+    TIFF = "image/tiff"
+    TEI = "application/prs.tei"
+    TEX = "application/prs.tex"
+    RST = "text/x-rst"
+    RTF = "text/rtf"
+    DOC = "application/msword"
+    XML = "text/xml"
+    PS = "application/postscript"
+    VIDEO_MPEG = "video/mpeg"
+    VIDEO_QT = "video/quicktime"
+    VIDEO_FLV = "video/x-flv"
+    VIDEO_AVI = "video/x-msvideo"
+    ISO = "application/x-iso9660-image"
+    MUSESCORE = "application/x-musescore"
+
+
+class Encoding(str, Enum):
+    """Available encodings for filtering."""
+    UTF8 = "utf-8"
+    ASCII = "us-ascii"
+    LATIN1 = "iso-8859-1"
+    WINDOWS1252 = "windows-1252"
 
 
 FtsField = Literal["book", "author", "subject", "bookshelf"]
@@ -117,13 +157,15 @@ class SearchQuery:
 
     # === Filters (PK) ===
     
-    def book_id(self, pk: int) -> "SearchQuery":
-        ph, nm = self._param(pk)
-        return self._add(f"book_id = {ph}", _Priority.PK, **{nm: pk})
+    def etext(self, nr: int) -> "SearchQuery":
+        """Search by Project Gutenberg etext number."""
+        ph, nm = self._param(nr)
+        return self._add(f"book_id = {ph}", _Priority.PK, **{nm: nr})
     
-    def book_ids(self, pks: list[int]) -> "SearchQuery":
-        ph, nm = self._param(pks)
-        return self._add(f"book_id = ANY({ph})", _Priority.PK, **{nm: pks})
+    def etexts(self, nrs: list[int]) -> "SearchQuery":
+        """Search by multiple etext numbers."""
+        ph, nm = self._param(nrs)
+        return self._add(f"book_id = ANY({ph})", _Priority.PK, **{nm: nrs})
     
     # === Filters (B-tree) ===
     
@@ -189,7 +231,9 @@ class SearchQuery:
         ph, nm = self._param(f'[{{"role": "{role}"}}]')
         return self._add(f"dc->'creators' @> ({ph})::jsonb", _Priority.GIN, **{nm: f'[{{"role": "{role}"}}]'})
     
-    def file_type(self, mediatype: str) -> "SearchQuery":
+    def file_type(self, ft: FileType) -> "SearchQuery":
+        """Filter by file type using FileType enum."""
+        mediatype = ft.value
         ph, nm = self._param(f'[{{"mediatype": "{mediatype}"}}]')
         return self._add(f"dc->'format' @> ({ph})::jsonb", _Priority.GIN, **{nm: f'[{{"mediatype": "{mediatype}"}}]'})
     
@@ -213,7 +257,9 @@ class SearchQuery:
         ph, nm = self._param(f'[{{"subject": "{name}"}}]')
         return self._add(f"dc->'subjects' @> ({ph})::jsonb", _Priority.GIN, **{nm: f'[{{"subject": "{name}"}}]'})
     
-    def encoding(self, encoding: str) -> "SearchQuery":
+    def encoding(self, enc: Encoding) -> "SearchQuery":
+        """Filter by file encoding using Encoding enum."""
+        encoding = enc.value
         ph, nm = self._param(f'[{{"encoding": "{encoding}"}}]')
         return self._add(f"dc->'format' @> ({ph})::jsonb", _Priority.GIN, **{nm: f'[{{"encoding": "{encoding}"}}]'})
     
@@ -240,17 +286,14 @@ class SearchQuery:
         
         Examples:
             .where("dc->>'publisher' = :pub", pub="Penguin")
-            .where("LOWER(dc->>'source') LIKE :src", src="%archive%")
             .where("jsonb_array_length(dc->'creators') > :n", n=2)
         """
-        # Remap params to unique names to avoid conflicts
         remapped_sql = sql
         remapped_params = {}
         for key, value in params.items():
             ph, nm = self._param(value)
             remapped_sql = remapped_sql.replace(f":{key}", ph)
             remapped_params[nm] = value
-        
         return self._add(remapped_sql, _Priority.GIN, **remapped_params)
 
     # === Ordering ===
@@ -382,10 +425,11 @@ class FullTextSearch:
         sql, params = q.build_count()
         return session.execute(text(sql), params).scalar() or 0
     
-    def get(self, book_id: int) -> dict | None:
+    def get(self, etext_nr: int) -> dict | None:
+        """Get a single book by etext number."""
         with self.Session() as session:
             sql = "SELECT book_id, title, primary_author, downloads, dc FROM mv_books_dc WHERE book_id = :id"
-            row = session.execute(text(sql), {"id": book_id}).fetchone()
+            row = session.execute(text(sql), {"id": etext_nr}).fetchone()
             if not row:
                 return None
             return {"book_id": row.book_id, "title": row.title, "author": row.primary_author, "downloads": row.downloads, "dc": row.dc}
@@ -415,7 +459,7 @@ if __name__ == "__main__":
         ("FTS Bookshelf: Science Fiction", s.query().search_bookshelf("Science Fiction")[1, 10]),
         ("FTS Subject: History", s.query().search_subject("History")[1, 10]),
         ("Has Translator", s.query().has_contributor("Translator").public_domain()[1, 10]),
-        ("Has EPUB + Dickens", s.query().file_type("application/epub+zip").search("Dickens")[1, 10]),
+        ("Has EPUB + Dickens", s.query().file_type(FileType.EPUB).search("Dickens")[1, 10]),
         ("Born after 1800", s.query().search("Novel").author_born_after(1800)[1, 10]),
         ("Released after 2020", s.query().released_after("2020-01-01")[1, 10]),
         ("Released 2020-2023", s.query().released_after("2020-01-01").released_before("2023-12-31")[1, 10]),
@@ -431,7 +475,19 @@ if __name__ == "__main__":
         ("Bookshelf ID (Sci-Fi = 68)", s.query().bookshelf_id(68)[1, 10]),
         ("Bookshelf exact name", s.query().bookshelf("Science Fiction")[1, 10]),
         ("Subject exact name", s.query().subject("Fiction")[1, 10]),
-        ("Encoding UTF-8", s.query().encoding("utf-8").search("Novel")[1, 10]),
+        ("Encoding UTF-8", s.query().encoding(Encoding.UTF8).search("Novel")[1, 10]),
+        
+        # Etext
+        ("Etext 1342 (Pride & Prejudice)", s.query().etext(1342)[1, 1]),
+        ("Etexts batch", s.query().etexts([1342, 84, 11])[1, 10]),
+        
+        # File types
+        ("FileType: EPUB", s.query().file_type(FileType.EPUB).search("Shakespeare")[1, 10]),
+        ("FileType: KINDLE", s.query().file_type(FileType.KINDLE).search("Shakespeare")[1, 10]),
+        ("FileType: PDF", s.query().file_type(FileType.PDF)[1, 10]),
+        ("FileType: TXT", s.query().file_type(FileType.TXT).search("Shakespeare")[1, 10]),
+        ("FileType: HTML", s.query().file_type(FileType.HTML).search("Shakespeare")[1, 10]),
+        ("FileType: MP3", s.query().file_type(FileType.MP3)[1, 10]),
         
         # Custom SQL
         ("Custom: multi-author books", s.query().search("Novel").where("jsonb_array_length(dc->'creators') > :n", n=1)[1, 10]),
