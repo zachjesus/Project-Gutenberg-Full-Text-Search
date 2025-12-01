@@ -1,19 +1,21 @@
--- Dublin Core Materialized View with JSONB
--- Optimized for FullTextSearch.py query patterns
--- Fully aligned with libgutenberg DublinCoreMapping.py
+-- Dublin Core Materialized View
+-- Aligned with libgutenberg DublinCoreMapping.py
 
 -- Start transaction - if anything fails, everything rolls back
 BEGIN;
 
--- Speed up MV creation with more RAM
-SET LOCAL work_mem = '2GB';
-SET LOCAL maintenance_work_mem = '4GB';
-SET LOCAL max_parallel_workers_per_gather = 4;
+SET LOCAL work_mem = '8GB';
+SET LOCAL maintenance_work_mem = '10GB';
+SET LOCAL max_parallel_workers_per_gather = 8;
 
 -- Set to abort on any error
 SET LOCAL client_min_messages = WARNING;
 
--- Create tsvector aggregate function if not exists
+-- Immutable date cast (required for indexing - ::date cast depends on timezone)
+CREATE OR REPLACE FUNCTION text_to_date_immutable(text) RETURNS date AS $$
+    SELECT $1::date;
+$$ LANGUAGE SQL IMMUTABLE STRICT;
+
 DO $$
 BEGIN
     CREATE AGGREGATE tsvector_agg(tsvector) (
@@ -31,118 +33,106 @@ CREATE MATERIALIZED VIEW mv_books_dc AS
 SELECT 
     b.pk AS book_id,
     b.title,
-    b.tsvec,                    -- Book tsvec (title + subjects + authors)
-    -- Author tsvec (aggregated from all authors)
+    b.tsvec,
+    b.downloads,
+    b.copyrighted,
+    
+    -- NEW: Primary language (first language, defaults to 'en')
+    COALESCE((
+        SELECT l.pk
+        FROM mn_books_langs mbl
+        JOIN langs l ON mbl.fk_langs = l.pk
+        WHERE mbl.fk_books = b.pk
+        LIMIT 1
+    ), 'en') AS primary_lang,
+    
+    -- Is this an Audio type? (category pk 1 or 2 per libgutenberg)
+    EXISTS (
+        SELECT 1 FROM mn_books_categories mbc
+        WHERE mbc.fk_books = b.pk AND mbc.fk_categories IN (1, 2)
+    ) AS is_audio,
+    
+    -- NEW: Has any non-obsolete files?
+    EXISTS (
+        SELECT 1 FROM files f
+        WHERE f.fk_books = b.pk AND f.obsoleted = 0 AND f.diskstatus = 0
+    ) AS has_files,
+    
+    -- NEW: Fast filter columns
+    EXISTS (
+        SELECT 1 FROM attributes a 
+        WHERE a.fk_books = b.pk AND a.fk_attriblist = 901
+    ) AS has_cover,
+    
+    -- Subtitle for text search
+    (
+        SELECT CASE 
+            WHEN a.text LIKE '%$b%' THEN TRIM(SPLIT_PART(a.text, '$b', 2))
+            ELSE NULL
+        END
+        FROM attributes a 
+        WHERE a.fk_books = b.pk AND a.fk_attriblist = 245
+        LIMIT 1
+    ) AS subtitle,
+    
+    -- Author birth/death year ranges
+    (
+        SELECT MAX(au.born_floor) 
+        FROM mn_books_authors mba
+        JOIN authors au ON mba.fk_authors = au.pk
+        WHERE mba.fk_books = b.pk AND au.born_floor > 0
+    ) AS max_author_birthyear,
+    
+    (
+        SELECT MIN(au.born_floor) 
+        FROM mn_books_authors mba
+        JOIN authors au ON mba.fk_authors = au.pk
+        WHERE mba.fk_books = b.pk AND au.born_floor > 0
+    ) AS min_author_birthyear,
+    
+    -- Tsvectors (CANNOT be in JSONB)
     COALESCE((
         SELECT tsvector_agg(au.tsvec)
         FROM mn_books_authors mba
         JOIN authors au ON mba.fk_authors = au.pk
         WHERE mba.fk_books = b.pk AND au.tsvec IS NOT NULL
     ), ''::tsvector) AS author_tsvec,
-    -- Subject tsvec (aggregated from all subjects)
+    
     COALESCE((
         SELECT tsvector_agg(s.tsvec)
         FROM mn_books_subjects mbs
         JOIN subjects s ON mbs.fk_subjects = s.pk
         WHERE mbs.fk_books = b.pk AND s.tsvec IS NOT NULL
     ), ''::tsvector) AS subject_tsvec,
-    -- Bookshelf tsvec (aggregated from all bookshelves)
+    
     COALESCE((
         SELECT tsvector_agg(bs.tsvec)
         FROM mn_books_bookshelves mbbs
         JOIN bookshelves bs ON mbbs.fk_bookshelves = bs.pk
         WHERE mbbs.fk_books = b.pk AND bs.tsvec IS NOT NULL
     ), ''::tsvector) AS bookshelf_tsvec,
-    b.downloads,
-    b.release_date,
-    b.copyrighted,
-    -- Has files check (common filter)
-    EXISTS (
-        SELECT 1 FROM files f 
-        WHERE f.fk_books = b.pk 
-        AND f.obsoleted = 0 
-        AND f.diskstatus = 0
-    ) AS has_files,
-    -- Primary author name for fast filtering/display
+    
+    -- Primary author for display/sorting
     (
         SELECT au.author
         FROM mn_books_authors mba
         JOIN authors au ON mba.fk_authors = au.pk
-        WHERE mba.fk_books = b.pk AND mba.heading = 1
+        WHERE mba.fk_books = b.pk
+        ORDER BY mba.heading
         LIMIT 1
     ) AS primary_author,
-    -- Primary author birth year for range filters
-    (
-        SELECT au.born_floor
-        FROM mn_books_authors mba
-        JOIN authors au ON mba.fk_authors = au.pk
-        WHERE mba.fk_books = b.pk AND mba.heading = 1
-        LIMIT 1
-    ) AS author_birthdate,
-    -- Primary author death year for range filters
-    (
-        SELECT au.died_floor
-        FROM mn_books_authors mba
-        JOIN authors au ON mba.fk_authors = au.pk
-        WHERE mba.fk_books = b.pk AND mba.heading = 1
-        LIMIT 1
-    ) AS author_deathdate,
-    -- Is audiobook flag (category PK 1, 2, 3, or 6 are Sound per dcmitypes table)
-    EXISTS (
-        SELECT 1 FROM mn_books_categories mbc
-        WHERE mbc.fk_books = b.pk AND mbc.fk_categories IN (1, 2, 3, 6)
-    ) AS is_audiobook,
-    -- Primary language code for fast filtering
-    (
-        SELECT l.pk
-        FROM mn_books_langs mbl
-        JOIN langs l ON mbl.fk_langs = l.pk
-        WHERE mbl.fk_books = b.pk
-        LIMIT 1
-    ) AS primary_language,
-    -- Primary DCMI type for filtering
-    (
-        SELECT mbc.fk_categories
-        FROM mn_books_categories mbc
-        WHERE mbc.fk_books = b.pk
-        LIMIT 1
-    ) AS primary_dcmitype,
-    -- Primary LoCC for fast filtering
-    (
-        SELECT lc.pk
-        FROM mn_books_loccs mblc
-        JOIN loccs lc ON mblc.fk_loccs = lc.pk
-        WHERE mblc.fk_books = b.pk
-        LIMIT 1
-    ) AS primary_locc,
-    -- Primary subject for display
+    
+    -- Primary subject for display/sorting
     (
         SELECT s.subject
         FROM mn_books_subjects mbs
         JOIN subjects s ON mbs.fk_subjects = s.pk
         WHERE mbs.fk_books = b.pk
+        ORDER BY s.subject
         LIMIT 1
     ) AS primary_subject,
-    -- Primary bookshelf for display
-    (
-        SELECT bs.bookshelf
-        FROM mn_books_bookshelves mbbs
-        JOIN bookshelves bs ON mbbs.fk_bookshelves = bs.pk
-        WHERE mbbs.fk_books = b.pk
-        LIMIT 1
-    ) AS primary_bookshelf,
-    -- Author count (useful for "single author" vs "anthology" filtering)
-    (
-        SELECT COUNT(*)
-        FROM mn_books_authors mba
-        WHERE mba.fk_books = b.pk
-    )::int AS author_count,
-    -- File count (useful for "has multiple formats" filtering)
-    (
-        SELECT COUNT(*)
-        FROM files f
-        WHERE f.fk_books = b.pk AND f.obsoleted = 0 AND f.diskstatus = 0
-    )::int AS file_count,
+    
+    -- Everything else in JSONB
     jsonb_build_object(
         -- ========================================================================
         -- DUBLIN CORE: Identifier
@@ -538,14 +528,14 @@ FROM books b;
 -- Primary key
 CREATE UNIQUE INDEX idx_mv_dc_pk ON mv_books_dc (book_id);
 
--- B-tree: equality, range, ORDER BY
+-- B-tree: ORDER BY / range filters
 CREATE INDEX idx_mv_dc_downloads ON mv_books_dc (downloads DESC);
-CREATE INDEX idx_mv_dc_release ON mv_books_dc (release_date DESC);
-CREATE INDEX idx_mv_dc_lang ON mv_books_dc (primary_language);
-CREATE INDEX idx_mv_dc_locc ON mv_books_dc (primary_locc);
-CREATE INDEX idx_mv_dc_dcmitype ON mv_books_dc (primary_dcmitype);
-CREATE INDEX idx_mv_dc_birth ON mv_books_dc (author_birthdate) WHERE author_birthdate IS NOT NULL;
-CREATE INDEX idx_mv_dc_death ON mv_books_dc (author_deathdate) WHERE author_deathdate IS NOT NULL;
+
+-- B-tree: top-level filter columns (PostgreSQL combines these efficiently)
+CREATE INDEX idx_mv_dc_copyrighted ON mv_books_dc (copyrighted);
+CREATE INDEX idx_mv_dc_lang ON mv_books_dc (primary_lang);
+CREATE INDEX idx_mv_dc_is_audio ON mv_books_dc (is_audio);
+CREATE INDEX idx_mv_dc_has_files ON mv_books_dc (has_files) WHERE has_files = true;
 
 -- GIN: full-text search (tsvector)
 CREATE INDEX idx_mv_dc_tsvec ON mv_books_dc USING GIN (tsvec);
@@ -553,19 +543,32 @@ CREATE INDEX idx_mv_dc_author_tsvec ON mv_books_dc USING GIN (author_tsvec);
 CREATE INDEX idx_mv_dc_subject_tsvec ON mv_books_dc USING GIN (subject_tsvec);
 CREATE INDEX idx_mv_dc_bookshelf_tsvec ON mv_books_dc USING GIN (bookshelf_tsvec);
 
--- GIN: trigram (title, author, subject)
+-- GIN: trigram fuzzy search (% operator - whole string similarity)
 CREATE INDEX idx_mv_dc_title_trgm ON mv_books_dc USING GIN (title gin_trgm_ops);
 CREATE INDEX idx_mv_dc_author_trgm ON mv_books_dc USING GIN (primary_author gin_trgm_ops);
 CREATE INDEX idx_mv_dc_subject_trgm ON mv_books_dc USING GIN (primary_subject gin_trgm_ops);
 
--- Partial: common filtered subsets
-CREATE INDEX idx_mv_dc_pd ON mv_books_dc (downloads DESC) WHERE copyrighted = 0;
-CREATE INDEX idx_mv_dc_audio ON mv_books_dc (downloads DESC) WHERE is_audiobook = true;
-CREATE INDEX idx_mv_dc_files ON mv_books_dc (downloads DESC) WHERE has_files = true;
+-- GiST: trigram fuzzy search (<% operator - word_similarity for typos)
+CREATE INDEX idx_mv_dc_title_trgm_gist ON mv_books_dc USING GIST (title gist_trgm_ops);
+CREATE INDEX idx_mv_dc_author_trgm_gist ON mv_books_dc USING GIST (primary_author gist_trgm_ops);
+CREATE INDEX idx_mv_dc_subject_trgm_gist ON mv_books_dc USING GIST (primary_subject gist_trgm_ops);
 
--- GIN JSONB: nested array searches
-CREATE INDEX idx_mv_dc_subjects ON mv_books_dc USING GIN ((dc->'subjects') jsonb_path_ops);
+-- GIN: JSONB containment (@>) - ONLY for fields NOT top-level
+CREATE INDEX idx_mv_dc_coverage ON mv_books_dc USING GIN ((dc->'coverage') jsonb_path_ops);
 CREATE INDEX idx_mv_dc_bookshelves ON mv_books_dc USING GIN ((dc->'bookshelves') jsonb_path_ops);
+CREATE INDEX idx_mv_dc_subjects ON mv_books_dc USING GIN ((dc->'subjects') jsonb_path_ops);
+CREATE INDEX idx_mv_dc_format ON mv_books_dc USING GIN ((dc->'format') jsonb_path_ops);
 CREATE INDEX idx_mv_dc_creators ON mv_books_dc USING GIN ((dc->'creators') jsonb_path_ops);
+
+-- B-tree: date range filters (uses immutable wrapper)
+CREATE INDEX idx_mv_dc_date ON mv_books_dc (text_to_date_immutable(dc->>'date'));
+
+CREATE INDEX idx_mv_dc_has_cover ON mv_books_dc (has_cover) WHERE has_cover = true;
+CREATE INDEX idx_mv_dc_subtitle_trgm ON mv_books_dc USING GIN (subtitle gin_trgm_ops);
+CREATE INDEX idx_mv_dc_max_birthyear ON mv_books_dc (max_author_birthyear) WHERE max_author_birthyear IS NOT NULL;
+CREATE INDEX idx_mv_dc_min_birthyear ON mv_books_dc (min_author_birthyear) WHERE min_author_birthyear IS NOT NULL;
+
+-- Update statistics for query planner
+ANALYZE mv_books_dc;
 
 COMMIT;
