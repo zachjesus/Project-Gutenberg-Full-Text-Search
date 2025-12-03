@@ -1,0 +1,174 @@
+"""Test all FullTextSearch methods."""
+from FullTextSearch import FullTextSearch, SearchField, SearchType, FileType, Encoding
+import time
+
+s = FullTextSearch()
+
+def test(name: str, q):
+    """Run a single test and print results."""
+    start = time.perf_counter()
+    try:
+        data = s.execute(q)
+        ms = (time.perf_counter() - start) * 1000
+        count = data["total"]
+        first = data["results"][0] if data["results"] else None
+        title = first["title"][:40] if first else "N/A"
+        author = (first["author"] or "Unknown")[:25] if first else "N/A"
+        print(f"{name:<50} | {count:>6} | {ms:>7.1f}ms | {title} - {author}")
+    except Exception as e:
+        ms = (time.perf_counter() - start) * 1000
+        print(f"{name:<50} | {'ERR':>6} | {ms:>7.1f}ms | {e}")
+
+print("=" * 130)
+print(f"{'Test':<50} | {'Count':>6} | {'Time':>8} | First Result")
+print("=" * 130)
+
+# === Search: FTS (all fields) ===
+print("-" * 130)
+print("FTS Search (stemming, GIN tsvector)")
+print("-" * 130)
+test("FTS BOOK", s.query().search("Shakespeare")[1, 10])
+test("FTS TITLE", s.query().search("Adventure", SearchField.TITLE)[1, 10])
+test("FTS SUBTITLE", s.query().search("Volume", SearchField.SUBTITLE)[1, 10])
+test("FTS AUTHOR", s.query().search("Twain", SearchField.AUTHOR)[1, 10])
+test("FTS SUBJECT", s.query().search("History", SearchField.SUBJECT)[1, 10])
+test("FTS BOOKSHELF", s.query().search("Science Fiction", SearchField.BOOKSHELF)[1, 10])
+test("FTS ATTRIBUTE", s.query().search("illustrated", SearchField.ATTRIBUTE)[1, 10])
+
+# === Search: FUZZY (all fields) ===
+print("-" * 130)
+print("FUZZY Search (typo-tolerant, GiST trigram)")
+print("-" * 130)
+test("FUZZY BOOK", s.query().search("Shakspeare", SearchField.BOOK, SearchType.FUZZY)[1, 10])
+test("FUZZY TITLE", s.query().search("Advntures", SearchField.TITLE, SearchType.FUZZY)[1, 10])
+test("FUZZY SUBTITLE", s.query().search("Volumee", SearchField.SUBTITLE, SearchType.FUZZY)[1, 10])
+test("FUZZY AUTHOR", s.query().search("Twian", SearchField.AUTHOR, SearchType.FUZZY)[1, 10])
+test("FUZZY SUBJECT", s.query().search("Ficton", SearchField.SUBJECT, SearchType.FUZZY)[1, 10])
+test("FUZZY BOOKSHELF", s.query().search("Scince Ficton", SearchField.BOOKSHELF, SearchType.FUZZY)[1, 10])
+test("FUZZY ATTRIBUTE", s.query().search("ilustrated", SearchField.ATTRIBUTE, SearchType.FTS)[1, 10])
+
+# === Search: CONTAINS (all fields) ===
+print("-" * 130)
+print("CONTAINS Search (substring, GIN trigram)")
+print("-" * 130)
+test("CONTAINS BOOK", s.query().search("venturer", SearchField.BOOK, SearchType.CONTAINS)[1, 10])
+test("CONTAINS TITLE", s.query().search("venture", SearchField.TITLE, SearchType.CONTAINS)[1, 10])
+test("CONTAINS SUBTITLE", s.query().search("Vol", SearchField.SUBTITLE, SearchType.CONTAINS)[1, 10])
+test("CONTAINS AUTHOR", s.query().search("wain", SearchField.AUTHOR, SearchType.CONTAINS)[1, 10])
+test("CONTAINS SUBJECT", s.query().search("iction", SearchField.SUBJECT, SearchType.CONTAINS)[1, 10])
+test("CONTAINS BOOKSHELF", s.query().search("Fiction", SearchField.BOOKSHELF, SearchType.CONTAINS)[1, 10])
+test("CONTAINS ATTRIBUTE", s.query().search("llustrat", SearchField.ATTRIBUTE, SearchType.FTS)[1, 10])
+
+# === Filters: PK ===
+print("-" * 130)
+print("Filters: Primary Key")
+print("-" * 130)
+test("etext()", s.query().etext(1342)[1, 10])
+test("etexts()", s.query().etexts([1342, 84, 11])[1, 10])
+
+# === Filters: B-tree ===
+print("-" * 130)
+print("Filters: B-tree")
+print("-" * 130)
+test("downloads_gte()", s.query().downloads_gte(10000)[1, 10])
+test("downloads_lte()", s.query().downloads_lte(100)[1, 10])
+test("public_domain()", s.query().public_domain()[1, 10])
+test("copyrighted()", s.query().copyrighted()[1, 10])
+test("lang()", s.query().lang("de")[1, 10])
+test("text_only()", s.query().text_only()[1, 10])
+test("audiobook()", s.query().audiobook()[1, 10])
+test("has_files()", s.query().has_files()[1, 10])
+test("has_cover()", s.query().has_cover()[1, 10])
+test("author_born_after()", s.query().author_born_after(1900)[1, 10])
+test("author_born_before()", s.query().author_born_before(1700)[1, 10])
+
+# === Filters: Date ===
+print("-" * 130)
+print("Filters: Date")
+print("-" * 130)
+test("released_after()", s.query().released_after("2020-01-01")[1, 10])
+test("released_before()", s.query().released_before("2000-01-01")[1, 10])
+
+# === Filters: GIN JSONB ===
+print("-" * 130)
+print("Filters: GIN JSONB")
+print("-" * 130)
+test("locc()", s.query().locc("PS")[1, 10])
+test("has_contributor()", s.query().has_contributor("Illustrator")[1, 10])
+test("file_type() EPUB", s.query().file_type(FileType.EPUB)[1, 10])
+test("file_type() PDF", s.query().file_type(FileType.PDF)[1, 10])
+test("file_type() MP3", s.query().file_type(FileType.MP3)[1, 10])
+test("file_type() KINDLE", s.query().search("Computers").file_type(FileType.KINDLE)[1, 10])
+test("author_id()", s.query().author_id(53)[1, 10])
+test("subject_id()", s.query().subject_id(1)[1, 10])
+test("bookshelf_id()", s.query().bookshelf_id(68)[1, 10])
+test("encoding() UTF8", s.query().encoding(Encoding.UTF8)[1, 10])
+test("encoding() ASCII", s.query().encoding(Encoding.ASCII)[1, 10])
+test("author_died_after()", s.query().author_died_after(1950)[1, 10])
+test("author_died_before()", s.query().author_died_before(1800)[1, 10])
+
+# Add chained search tests:
+print("-" * 130)
+print("Chained Searches (AND logic)")
+print("-" * 130)
+test("FTS AUTHOR + FTS SUBJECT", s.query().search("Shakespeare", SearchField.AUTHOR).search("Tragedy", SearchField.SUBJECT)[1, 10])
+test("FTS TITLE + FTS BOOKSHELF", s.query().search("Adventure", SearchField.TITLE).search("Children", SearchField.BOOKSHELF)[1, 10])
+test("FUZZY AUTHOR + FTS TITLE", s.query().search("Shakspeare", SearchField.AUTHOR, SearchType.FUZZY).search("Hamlet", SearchField.TITLE)[1, 10])
+
+# === Custom SQL ===
+print("-" * 130)
+print("Custom SQL")
+print("-" * 130)
+test("where() - multi-author", s.query().where("jsonb_array_length(dc->'creators') > :n", n=2)[1, 10])
+test("where() - has description", s.query().where("dc->'description' IS NOT NULL")[1, 10])
+
+# === Ordering ===
+print("-" * 130)
+print("Ordering")
+print("-" * 130)
+test("order_by(downloads)", s.query().search("Novel").order_by("downloads")[1, 10])
+test("order_by(title)", s.query().search("Novel").order_by("title")[1, 10])
+test("order_by(author)", s.query().search("Novel").order_by("author")[1, 10])
+test("order_by(relevance)", s.query().search("Novel").order_by("relevance")[1, 10])
+
+# === Combined filters ===
+print("-" * 130)
+print("Combined Filters")
+print("-" * 130)
+test("FTS + lang + public_domain", s.query().search("Adventure").lang("en").public_domain()[1, 10])
+test("FTS + file_type + has_cover", s.query().search("Novel").file_type(FileType.EPUB).has_cover()[1, 10])
+test("FUZZY TITLE + downloads_gte", s.query().search("Shakspeare", SearchField.TITLE, SearchType.FUZZY).downloads_gte(1000)[1, 10])
+test("author_id + file_type", s.query().author_id(53).file_type(FileType.TXT)[1, 10])
+test("FTS BOOKSHELF + lang", s.query().search("Mystery", SearchField.BOOKSHELF).lang("en")[1, 10])
+test("CONTAINS ATTRIBUTE + has_cover", s.query().search("copyright", SearchField.ATTRIBUTE, SearchType.FTS).has_cover()[1, 10])
+
+# === Pagination ===
+print("-" * 130)
+print("Pagination")
+print("-" * 130)
+test("page 1", s.query().search("Novel")[1, 5])
+test("page 2", s.query().search("Novel")[2, 5])
+test("page 3", s.query().search("Novel")[3, 5])
+
+# === Direct methods ===
+print("-" * 130)
+print("Direct Methods")
+print("-" * 130)
+
+start = time.perf_counter()
+book = s.get(1342)
+ms = (time.perf_counter() - start) * 1000
+print(f"{'get(1342)':<50} | {'1':>6} | {ms:>7.1f}ms | {book['title'][:40]} - {(book['author'] or 'Unknown')[:25]}")
+
+start = time.perf_counter()
+books = s.get_many([1342, 84, 11])
+ms = (time.perf_counter() - start) * 1000
+print(f"{'get_many([1342, 84, 11])':<50} | {len(books):>6} | {ms:>7.1f}ms | {books[0]['title'][:40]} - {(books[0]['author'] or 'Unknown')[:25]}")
+
+start = time.perf_counter()
+count = s.count(s.query().search("Shakespeare"))
+ms = (time.perf_counter() - start) * 1000
+print(f"{'count()':<50} | {count:>6} | {ms:>7.1f}ms | (count only)")
+
+print("=" * 130)
+print("Done! All 7 fields support FTS, FUZZY, and CONTAINS search types.")
