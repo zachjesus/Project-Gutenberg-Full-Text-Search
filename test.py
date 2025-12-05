@@ -1,5 +1,8 @@
 """Test all FullTextSearch methods."""
-from FullTextSearch import FullTextSearch, SearchField, SearchType, FileType, Encoding
+from FullTextSearch import (
+    FullTextSearch, SearchField, SearchType, FileType, Encoding,
+    OrderBy, Crosswalk
+)
 import time
 
 s = FullTextSearch()
@@ -12,8 +15,12 @@ def test(name: str, q):
         ms = (time.perf_counter() - start) * 1000
         count = data["total"]
         first = data["results"][0] if data["results"] else None
-        title = first["title"][:40] if first else "N/A"
-        author = (first["author"] or "Unknown")[:25] if first else "N/A"
+        if first:
+            title = first.get("title", first.get("name", "N/A"))[:40]
+            author = first.get("author", "Unknown") or "Unknown"
+            author = author[:25]
+        else:
+            title, author = "N/A", "N/A"
         print(f"{name:<50} | {count:>6} | {ms:>7.1f}ms | {title} - {author}")
     except Exception as e:
         ms = (time.perf_counter() - start) * 1000
@@ -45,7 +52,7 @@ test("FUZZY SUBTITLE", s.query().search("Volumee", SearchField.SUBTITLE, SearchT
 test("FUZZY AUTHOR", s.query().search("Twian", SearchField.AUTHOR, SearchType.FUZZY)[1, 10])
 test("FUZZY SUBJECT", s.query().search("Ficton", SearchField.SUBJECT, SearchType.FUZZY)[1, 10])
 test("FUZZY BOOKSHELF", s.query().search("Scince Ficton", SearchField.BOOKSHELF, SearchType.FUZZY)[1, 10])
-test("FUZZY ATTRIBUTE", s.query().search("ilustrated", SearchField.ATTRIBUTE, SearchType.FTS)[1, 10])
+test("FUZZY ATTRIBUTE", s.query().search("ilustrated", SearchField.ATTRIBUTE, SearchType.FUZZY)[1, 10])
 
 # === Search: CONTAINS (all fields) ===
 print("-" * 130)
@@ -57,7 +64,7 @@ test("CONTAINS SUBTITLE", s.query().search("Vol", SearchField.SUBTITLE, SearchTy
 test("CONTAINS AUTHOR", s.query().search("wain", SearchField.AUTHOR, SearchType.CONTAINS)[1, 10])
 test("CONTAINS SUBJECT", s.query().search("iction", SearchField.SUBJECT, SearchType.CONTAINS)[1, 10])
 test("CONTAINS BOOKSHELF", s.query().search("Fiction", SearchField.BOOKSHELF, SearchType.CONTAINS)[1, 10])
-test("CONTAINS ATTRIBUTE", s.query().search("llustrat", SearchField.ATTRIBUTE, SearchType.FTS)[1, 10])
+test("CONTAINS ATTRIBUTE", s.query().search("biblical", SearchField.ATTRIBUTE, SearchType.CONTAINS)[1, 10])
 
 # === Filters: PK ===
 print("-" * 130)
@@ -107,7 +114,7 @@ test("encoding() ASCII", s.query().encoding(Encoding.ASCII)[1, 10])
 test("author_died_after()", s.query().author_died_after(1950)[1, 10])
 test("author_died_before()", s.query().author_died_before(1800)[1, 10])
 
-# Add chained search tests:
+# === Chained Searches (AND logic) ===
 print("-" * 130)
 print("Chained Searches (AND logic)")
 print("-" * 130)
@@ -126,12 +133,14 @@ test("where() - has description", s.query().where("dc->'description' IS NOT NULL
 print("-" * 130)
 print("Ordering")
 print("-" * 130)
-test("order_by(downloads)", s.query().search("Novel").order_by("downloads")[1, 10])
-test("order_by(title)", s.query().search("Novel").order_by("title")[1, 10])
-test("order_by(author)", s.query().search("Novel").order_by("author")[1, 10])
-test("order_by(relevance)", s.query().search("Novel").order_by("relevance")[1, 10])
+test("order_by(DOWNLOADS)", s.query().search("Novel").order_by(OrderBy.DOWNLOADS)[1, 10])
+test("order_by(TITLE)", s.query().search("Novel").order_by(OrderBy.TITLE)[1, 10])
+test("order_by(AUTHOR)", s.query().search("Novel").order_by(OrderBy.AUTHOR)[1, 10])
+test("order_by(RELEVANCE)", s.query().search("Novel").order_by(OrderBy.RELEVANCE)[1, 10])
+test("order_by(RELEASE_DATE)", s.query().search("Novel").order_by(OrderBy.RELEASE_DATE)[1, 10])
+test("order_by(RANDOM)", s.query().search("Novel").order_by(OrderBy.RANDOM)[1, 10])
 
-# === Combined filters ===
+# === Combined Filters ===
 print("-" * 130)
 print("Combined Filters")
 print("-" * 130)
@@ -140,7 +149,34 @@ test("FTS + file_type + has_cover", s.query().search("Novel").file_type(FileType
 test("FUZZY TITLE + downloads_gte", s.query().search("Shakspeare", SearchField.TITLE, SearchType.FUZZY).downloads_gte(1000)[1, 10])
 test("author_id + file_type", s.query().author_id(53).file_type(FileType.TXT)[1, 10])
 test("FTS BOOKSHELF + lang", s.query().search("Mystery", SearchField.BOOKSHELF).lang("en")[1, 10])
-test("CONTAINS ATTRIBUTE + has_cover", s.query().search("copyright", SearchField.ATTRIBUTE, SearchType.FTS).has_cover()[1, 10])
+test("CONTAINS ATTRIBUTE + has_cover", s.query().search("copyright", SearchField.ATTRIBUTE, SearchType.CONTAINS).has_cover()[1, 10])
+
+# === Crosswalk Formats ===
+print("-" * 130)
+print("Crosswalk Formats")
+print("-" * 130)
+
+test("Crosswalk.FULL", s.query(Crosswalk.FULL).search("Shakespeare")[1, 5])
+
+start = time.perf_counter()
+data = s.execute(s.query(Crosswalk.MINI).search("Shakespeare")[1, 5])
+ms = (time.perf_counter() - start) * 1000
+first = data["results"][0] if data["results"] else {}
+print(f"{'Crosswalk.MINI':<50} | {data['total']:>6} | {ms:>7.1f}ms | keys: {list(first.keys())}")
+
+start = time.perf_counter()
+data = s.execute(s.query(Crosswalk.PG).search("Shakespeare")[1, 5])
+ms = (time.perf_counter() - start) * 1000
+first = data["results"][0] if data["results"] else {}
+print(f"{'Crosswalk.PG':<50} | {data['total']:>6} | {ms:>7.1f}ms | keys: {list(first.keys())}")
+if first:
+    print(f"  -> ebook_no: {first.get('ebook_no')}, files: {len(first.get('files', []))}, contributors: {len(first.get('contributors', []))}")
+
+start = time.perf_counter()
+data = s.execute(s.query(Crosswalk.SCHEMA_ORG).search("Shakespeare")[1, 5])
+ms = (time.perf_counter() - start) * 1000
+first = data["results"][0] if data["results"] else {}
+print(f"{'Crosswalk.SCHEMA_ORG':<50} | {data['total']:>6} | {ms:>7.1f}ms | keys: {list(first.keys())}")
 
 # === Pagination ===
 print("-" * 130)
@@ -150,7 +186,7 @@ test("page 1", s.query().search("Novel")[1, 5])
 test("page 2", s.query().search("Novel")[2, 5])
 test("page 3", s.query().search("Novel")[3, 5])
 
-# === Direct methods ===
+# === Direct Methods ===
 print("-" * 130)
 print("Direct Methods")
 print("-" * 130)
@@ -161,14 +197,52 @@ ms = (time.perf_counter() - start) * 1000
 print(f"{'get(1342)':<50} | {'1':>6} | {ms:>7.1f}ms | {book['title'][:40]} - {(book['author'] or 'Unknown')[:25]}")
 
 start = time.perf_counter()
+book_mini = s.get(1342, Crosswalk.MINI)
+ms = (time.perf_counter() - start) * 1000
+print(f"{'get(1342, Crosswalk.MINI)':<50} | {'1':>6} | {ms:>7.1f}ms | keys: {list(book_mini.keys())}")
+
+start = time.perf_counter()
+book_pg = s.get(1342, Crosswalk.PG)
+ms = (time.perf_counter() - start) * 1000
+print(f"{'get(1342, Crosswalk.PG)':<50} | {'1':>6} | {ms:>7.1f}ms | ebook_no: {book_pg.get('ebook_no')}, files: {len(book_pg.get('files', []))}")
+
+start = time.perf_counter()
 books = s.get_many([1342, 84, 11])
 ms = (time.perf_counter() - start) * 1000
-print(f"{'get_many([1342, 84, 11])':<50} | {len(books):>6} | {ms:>7.1f}ms | {books[0]['title'][:40]} - {(books[0]['author'] or 'Unknown')[:25]}")
+print(f"{'get_many([1342, 84, 11])':<50} | {len(books):>6} | {ms:>7.1f}ms | {books[0]['title'][:40]}")
 
 start = time.perf_counter()
 count = s.count(s.query().search("Shakespeare"))
 ms = (time.perf_counter() - start) * 1000
 print(f"{'count()':<50} | {count:>6} | {ms:>7.1f}ms | (count only)")
 
+# === Custom Transformer ===
+print("-" * 130)
+print("Custom Transformer")
+print("-" * 130)
+
+def my_transformer(row):
+    return {
+        "id": row.book_id,
+        "name": f"{row.title} by {row.primary_author or 'Unknown'}",
+        "popularity": row.downloads,
+    }
+
+s.set_custom_transformer(my_transformer)
+start = time.perf_counter()
+data = s.execute(s.query(Crosswalk.CUSTOM).search("Shakespeare")[1, 5])
+ms = (time.perf_counter() - start) * 1000
+first = data["results"][0] if data["results"] else {}
+print(f"{'Crosswalk.CUSTOM':<50} | {data['total']:>6} | {ms:>7.1f}ms | {first}")
+
+# === Dunder Methods ===
+print("-" * 130)
+print("Dunder Methods")
+print("-" * 130)
+q = s.query().search("Shakespeare").lang("en")
+print(f"len(q) = {len(q)} (1 search + 1 filter)")
+print(f"bool(q) = {bool(q)}")
+print(f"bool(s.query()) = {bool(s.query())} (empty query)")
+
 print("=" * 130)
-print("Done! All 7 fields support FTS, FUZZY, and CONTAINS search types.")
+print("All tests complete!")

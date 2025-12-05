@@ -93,6 +93,20 @@ SELECT
         JOIN authors au ON mba.fk_authors = au.pk
         WHERE mba.fk_books = b.pk AND au.born_floor > 0
     ) AS min_author_birthyear,
+
+    (
+        SELECT MAX(au.died_floor) 
+        FROM mn_books_authors mba
+        JOIN authors au ON mba.fk_authors = au.pk
+        WHERE mba.fk_books = b.pk AND au.died_floor > 0
+    ) AS max_author_deathyear,
+    
+    (
+        SELECT MIN(au.died_floor) 
+        FROM mn_books_authors mba
+        JOIN authors au ON mba.fk_authors = au.pk
+        WHERE mba.fk_books = b.pk AND au.died_floor > 0
+    ) AS min_author_deathyear,
     
     -- Reuse existing tsvec from authors table (already indexed there)
     COALESCE((
@@ -580,6 +594,8 @@ CREATE INDEX idx_mv_dc_has_files ON mv_books_dc (has_files) WHERE has_files = tr
 CREATE INDEX idx_mv_dc_has_cover ON mv_books_dc (has_cover) WHERE has_cover = true;
 CREATE INDEX idx_mv_dc_max_birthyear ON mv_books_dc (max_author_birthyear) WHERE max_author_birthyear IS NOT NULL;
 CREATE INDEX idx_mv_dc_min_birthyear ON mv_books_dc (min_author_birthyear) WHERE min_author_birthyear IS NOT NULL;
+CREATE INDEX idx_mv_dc_max_deathyear ON mv_books_dc (max_author_deathyear) WHERE max_author_deathyear IS NOT NULL;
+CREATE INDEX idx_mv_dc_min_deathyear ON mv_books_dc (min_author_deathyear) WHERE min_author_deathyear IS NOT NULL;
 
 -- ============================================================================
 -- GIN: Full-text search (tsvector)

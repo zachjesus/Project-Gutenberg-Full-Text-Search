@@ -1,11 +1,10 @@
 """Simple FTS using mv_books_dc materialized view with query builder."""
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Literal
-from enum import IntEnum, Enum
+from typing import Any, Callable
+from enum import Enum
 from sqlalchemy import text, create_engine
 from sqlalchemy.orm import sessionmaker
-import time
 
 
 class Config:
@@ -15,18 +14,11 @@ class Config:
     PGUSER = 'postgres'
 
 
-class _Priority(IntEnum):
-    """Internal query condition priority. Lower = more selective = evaluated first."""
-    PK = 1
-    FTS = 2
-    TRGM = 3
-    BTREE = 4
-    DATE = 5
-    GIN = 6
-
+# =============================================================================
+# Enums
+# =============================================================================
 
 class FileType(str, Enum):
-    """Available file types for filtering."""
     EPUB = "application/epub+zip"
     KINDLE = "application/x-mobipocket-ebook"
     TXT = "text/plain"
@@ -42,23 +34,9 @@ class FileType(str, Enum):
     PNG = "image/png"
     GIF = "image/gif"
     TIFF = "image/tiff"
-    TEI = "application/prs.tei"
-    TEX = "application/prs.tex"
-    RST = "text/x-rst"
-    RTF = "text/rtf"
-    DOC = "application/msword"
-    XML = "text/xml"
-    PS = "application/postscript"
-    VIDEO_MPEG = "video/mpeg"
-    VIDEO_QT = "video/quicktime"
-    VIDEO_FLV = "video/x-flv"
-    VIDEO_AVI = "video/x-msvideo"
-    ISO = "application/x-iso9660-image"
-    MUSESCORE = "application/x-musescore"
 
 
 class Encoding(str, Enum):
-    """Available encodings for filtering."""
     ASCII = "us-ascii"
     UTF8 = "utf-8"
     LATIN1 = "iso-8859-1"
@@ -66,424 +44,380 @@ class Encoding(str, Enum):
 
 
 class SearchType(str, Enum):
-    """Search algorithm."""
-    FTS = "fts"           # Full-text (stemming) - GIN tsvector
-    FUZZY = "fuzzy"       # Typo-tolerant - GiST trigram <%
-    CONTAINS = "contains" # Substring - GIN trigram ILIKE
+    FTS = "fts"
+    FUZZY = "fuzzy"
+    CONTAINS = "contains"
 
 
 class SearchField(str, Enum):
-    """Searchable field."""
     BOOK = "book"
     TITLE = "title"
     AUTHOR = "author"
     SUBJECT = "subject"
     BOOKSHELF = "bookshelf"
     SUBTITLE = "subtitle"
-    ATTRIBUTE = "attribute"  
+    ATTRIBUTE = "attribute"
 
 
-OrderBy = Literal["relevance", "downloads", "title", "author"]
+class OrderBy(str, Enum):
+    RELEVANCE = "relevance"
+    DOWNLOADS = "downloads"
+    TITLE = "title"
+    AUTHOR = "author"
+    RELEASE_DATE = "release_date"
+    RANDOM = "random"
 
 
-@dataclass
-class _Condition:
-    """Internal: A single WHERE condition with its bound parameters."""
-    sql: str
-    params: dict[str, Any] = field(default_factory=dict)
-    priority: _Priority = _Priority.GIN
+class Crosswalk(str, Enum):
+    FULL = "full"
+    PG = "pg"
+    SCHEMA_ORG = "schema_org"
+    CUSTOM = "custom"
+    MINI = "mini"
 
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+_FIELD_COLS = {
+    SearchField.BOOK:      ("tsvec",           "book_text"),
+    SearchField.TITLE:     ("title_tsvec",     "title"),
+    SearchField.SUBTITLE:  ("subtitle_tsvec",  "subtitle"),
+    SearchField.AUTHOR:    ("author_tsvec",    "primary_author"),
+    SearchField.SUBJECT:   ("subject_tsvec",   "primary_subject"),
+    SearchField.BOOKSHELF: ("bookshelf_tsvec", "bookshelf_text"),
+    SearchField.ATTRIBUTE: ("attribute_tsvec", "attribute_text"),
+}
+
+_ORDER_SQL = {
+    OrderBy.DOWNLOADS: "downloads DESC",
+    OrderBy.TITLE: "title ASC",
+    OrderBy.AUTHOR: "primary_author ASC NULLS LAST",
+    OrderBy.RELEASE_DATE: "text_to_date_immutable(dc->>'date') DESC NULLS LAST",
+    OrderBy.RANDOM: "RANDOM()",
+}
+
+_SELECT = "book_id, title, primary_author, downloads, dc"
+
+_SUBQUERY = """book_id, title, primary_author, downloads, dc,
+    copyrighted, primary_lang, is_audio, has_files, has_cover,
+    max_author_birthyear, min_author_birthyear,
+    max_author_deathyear, min_author_deathyear,
+    tsvec, title_tsvec, subtitle_tsvec, author_tsvec, subject_tsvec, bookshelf_tsvec, attribute_tsvec,
+    book_text, bookshelf_text, attribute_text, primary_subject, subtitle"""
+
+
+# =============================================================================
+# Crosswalks
+# =============================================================================
+
+def _crosswalk_full(row) -> dict[str, Any]:
+    return {"book_id": row.book_id, "title": row.title, "author": row.primary_author, "downloads": row.downloads, "dc": row.dc}
+
+def _crosswalk_mini(row) -> dict[str, Any]:
+    return {"id": row.book_id, "title": row.title, "author": row.primary_author, "downloads": row.downloads}
+
+def _crosswalk_pg(row) -> dict[str, Any]:
+    dc = row.dc or {}
+    return {
+        "ebook_no": row.book_id, "title": row.title,
+        "contributors": [{"name": c.get("name"), "role": c.get("role", "Author")} for c in dc.get("creators", [])],
+        "language": dc.get("language"),
+        "subjects": [s.get("subject") for s in dc.get("subjects", []) if s.get("subject")],
+        "bookshelves": [b.get("bookshelf") for b in dc.get("bookshelves", []) if b.get("bookshelf")],
+        "release_date": dc.get("date"), "downloads_last_30_days": row.downloads,
+        "files": [{"filename": f.get("filename"), "type": f.get("mediatype"), "size": f.get("extent")} 
+                  for f in dc.get("format", []) if f.get("filename")],
+        "cover_url": (dc.get("coverpage") or [None])[0],
+    }
+
+def _crosswalk_schema_org(row) -> dict[str, Any]:
+    dc = row.dc or {}
+    return {"@context": "https://schema.org", "@type": "Book", "identifier": row.book_id, 
+            "name": row.title, "author": row.primary_author, "datePublished": dc.get("date")}
+
+_CROSSWALK_MAP = {
+    Crosswalk.FULL: _crosswalk_full, 
+    Crosswalk.MINI: _crosswalk_mini,
+    Crosswalk.PG: _crosswalk_pg, 
+    Crosswalk.SCHEMA_ORG: _crosswalk_schema_org, 
+    Crosswalk.CUSTOM: _crosswalk_full  # Default fallback if no custom set
+}
+
+
+# =============================================================================
+# SearchQuery
+# =============================================================================
 
 @dataclass
 class SearchQuery:
-    """Query builder for mv_books_dc."""
+    """Query builder. Searches run in inner query, filters in outer."""
     
-    # Maps field -> (fts_col, text_col)
-    _COLS = {
-        SearchField.BOOK:      ("tsvec",           "book_text"),
-        SearchField.TITLE:     ("title_tsvec",     "title"),
-        SearchField.SUBTITLE:  ("subtitle_tsvec",  "subtitle"),
-        SearchField.AUTHOR:    ("author_tsvec",    "primary_author"),
-        SearchField.SUBJECT:   ("subject_tsvec",   "primary_subject"),
-        SearchField.BOOKSHELF: ("bookshelf_tsvec", "bookshelf_text"),
-        SearchField.ATTRIBUTE: ("attribute_tsvec", "attribute_text"),
-    }
-    
-    _conditions: list[_Condition] = field(default_factory=list)
-    _order: OrderBy = "relevance"
+    _search: list[tuple[str, dict, str]] = field(default_factory=list)  # (sql, params, rank_col)
+    _filter: list[tuple[str, dict]] = field(default_factory=list)
+    _order: OrderBy = OrderBy.RELEVANCE
     _page: int = 1
     _page_size: int = 25
-    _searches: list[tuple[str, SearchType, str]] = field(default_factory=list)  # (text, type, col)
-    _uid: int = 0
-    
-    def _param(self, value: Any) -> tuple[str, str]:
-        """Generate unique param name and return (placeholder, name)."""
-        self._uid += 1
-        name = f"p{self._uid}"
-        return f":{name}", name
-    
-    def _add(self, sql: str, priority: _Priority = _Priority.GIN, **params) -> "SearchQuery":
-        """Add condition with params and priority."""
-        self._conditions.append(_Condition(sql, params, priority))
-        return self
+    _crosswalk: Crosswalk = Crosswalk.FULL
     
     # === Pagination ===
     
     def __getitem__(self, key: int | tuple) -> "SearchQuery":
+        """q[3] for page 3, q[2, 50] for page 2 with 50 results."""
         if isinstance(key, tuple):
             self._page, self._page_size = max(1, key[0]), max(1, min(100, key[1]))
         else:
             self._page = max(1, key)
         return self
     
-    # === Unified Search ===
+    def __len__(self) -> int:
+        """Number of conditions."""
+        return len(self._search) + len(self._filter)
     
-    def search(
-        self, 
-        txt: str, 
-        field: SearchField = SearchField.BOOK, 
-        type: SearchType = SearchType.FTS
-    ) -> "SearchQuery":
-        """
-        Universal search - all fields support all search types.
-        Can be chained multiple times for AND logic.
-        
-        Examples:
-            .search("Shakespeare")                                      # FTS on book
-            .search("Shakespeare", SearchField.AUTHOR)                  # FTS on author
-            .search("Shakspeare", SearchField.AUTHOR, SearchType.FUZZY) # Typo-tolerant
-            .search("Novel", SearchField.TITLE).search("Twain", SearchField.AUTHOR)  # AND
-        """
-        if not txt or not txt.strip():
-            return self
-        txt = txt.strip()
-        
-        fts_col, text_col = self._COLS[field]
-        ph, nm = self._param(txt)
-        
-        if type == SearchType.FTS:
-            self._searches.append((txt, type, fts_col))
-            return self._add(f"{fts_col} @@ websearch_to_tsquery('english', {ph})", _Priority.FTS, **{nm: txt})
-        
-        # FUZZY or CONTAINS use text column
-        self._searches.append((txt, type, text_col))
-        
-        if type == SearchType.FUZZY:
-            return self._add(f"{ph} <% {text_col}", _Priority.TRGM, **{nm: txt})
-        
-        # CONTAINS
-        return self._add(f"{text_col} ILIKE {ph}", _Priority.TRGM, **{nm: f"%{txt}%"})
+    def __bool__(self) -> bool:
+        """True if any conditions exist."""
+        return bool(self._search or self._filter)
     
-    # === Filters (PK) ===
+    # === Options ===
     
-    def etext(self, nr: int) -> "SearchQuery":
-        """Search by Project Gutenberg etext number."""
-        ph, nm = self._param(nr)
-        return self._add(f"book_id = {ph}", _Priority.PK, **{nm: nr})
-    
-    def etexts(self, nrs: list[int]) -> "SearchQuery":
-        """Search by multiple etext numbers."""
-        ph, nm = self._param(nrs)
-        return self._add(f"book_id = ANY({ph})", _Priority.PK, **{nm: nrs})
-    
-    # === Filters (B-tree) ===
-    
-    def downloads_gte(self, n: int) -> "SearchQuery":
-        ph, nm = self._param(n)
-        return self._add(f"downloads >= {ph}", _Priority.BTREE, **{nm: n})
-    
-    def downloads_lte(self, n: int) -> "SearchQuery":
-        ph, nm = self._param(n)
-        return self._add(f"downloads <= {ph}", _Priority.BTREE, **{nm: n})
-    
-    def public_domain(self) -> "SearchQuery":
-        return self._add("copyrighted = 0", _Priority.BTREE)
-    
-    def copyrighted(self) -> "SearchQuery":
-        return self._add("copyrighted = 1", _Priority.BTREE)
-    
-    def lang(self, code: str) -> "SearchQuery":
-        ph, nm = self._param(code)
-        return self._add(f"primary_lang = {ph}", _Priority.BTREE, **{nm: code})
-    
-    def text_only(self) -> "SearchQuery":
-        return self._add("is_audio = false", _Priority.BTREE)
-    
-    def audiobook(self, is_audio: bool = True) -> "SearchQuery":
-        return self._add(f"is_audio = {'true' if is_audio else 'false'}", _Priority.BTREE)
-    
-    def has_files(self) -> "SearchQuery":
-        return self._add("has_files = true", _Priority.BTREE)
-    
-    def has_cover(self) -> "SearchQuery":
-        return self._add("has_cover = true", _Priority.BTREE)
-    
-    def author_born_after(self, year: int) -> "SearchQuery":
-        ph, nm = self._param(year)
-        return self._add(f"max_author_birthyear >= {ph}", _Priority.BTREE, **{nm: year})
-    
-    def author_born_before(self, year: int) -> "SearchQuery":
-        ph, nm = self._param(year)
-        return self._add(f"min_author_birthyear <= {ph}", _Priority.BTREE, **{nm: year})
-    
-    # === Filters (Date) ===
-    
-    def released_after(self, date: str) -> "SearchQuery":
-        ph, nm = self._param(date)
-        return self._add(f"text_to_date_immutable(dc->>'date') >= ({ph})::date", _Priority.DATE, **{nm: date})
-    
-    def released_before(self, date: str) -> "SearchQuery":
-        ph, nm = self._param(date)
-        return self._add(f"text_to_date_immutable(dc->>'date') <= ({ph})::date", _Priority.DATE, **{nm: date})
-    
-    # === Filters (GIN JSONB) ===
-    
-    def locc(self, code: str) -> "SearchQuery":
-        ph, nm = self._param(f'[{{"id": "{code}"}}]')
-        return self._add(f"dc->'coverage' @> ({ph})::jsonb", _Priority.GIN, **{nm: f'[{{"id": "{code}"}}]'})
-    
-    def has_contributor(self, role: str) -> "SearchQuery":
-        ph, nm = self._param(f'[{{"role": "{role}"}}]')
-        return self._add(f"dc->'creators' @> ({ph})::jsonb", _Priority.GIN, **{nm: f'[{{"role": "{role}"}}]'})
-    
-    def file_type(self, ft: FileType) -> "SearchQuery":
-        """Filter by file type using FileType enum."""
-        mediatype = ft.value
-        ph, nm = self._param(f'[{{"mediatype": "{mediatype}"}}]')
-        return self._add(f"dc->'format' @> ({ph})::jsonb", _Priority.GIN, **{nm: f'[{{"mediatype": "{mediatype}"}}]'})
-    
-    def author_id(self, author_id: int) -> "SearchQuery":
-        ph, nm = self._param(f'[{{"id": {author_id}}}]')
-        return self._add(f"dc->'creators' @> ({ph})::jsonb", _Priority.GIN, **{nm: f'[{{"id": {author_id}}}]'})
-    
-    def subject_id(self, subject_id: int) -> "SearchQuery":
-        ph, nm = self._param(f'[{{"id": {subject_id}}}]')
-        return self._add(f"dc->'subjects' @> ({ph})::jsonb", _Priority.GIN, **{nm: f'[{{"id": {subject_id}}}]'})
-    
-    def bookshelf_id(self, bookshelf_id: int) -> "SearchQuery":
-        ph, nm = self._param(f'[{{"id": {bookshelf_id}}}]')
-        return self._add(f"dc->'bookshelves' @> ({ph})::jsonb", _Priority.GIN, **{nm: f'[{{"id": {bookshelf_id}}}]'})
-    
-    def encoding(self, enc: Encoding) -> "SearchQuery":
-        """Filter by file encoding using Encoding enum."""
-        encoding = enc.value
-        ph, nm = self._param(f'[{{"encoding": "{encoding}"}}]')
-        return self._add(f"dc->'format' @> ({ph})::jsonb", _Priority.GIN, **{nm: f'[{{"encoding": "{encoding}"}}]'})
-    
-    def author_died_after(self, year: int) -> "SearchQuery":
-        ph, nm = self._param(year)
-        return self._add(
-            f"EXISTS (SELECT 1 FROM jsonb_array_elements(dc->'creators') c WHERE (c->>'deathdate')::int >= {ph})",
-            _Priority.GIN, **{nm: year}
-        )
-    
-    def author_died_before(self, year: int) -> "SearchQuery":
-        ph, nm = self._param(year)
-        return self._add(
-            f"EXISTS (SELECT 1 FROM jsonb_array_elements(dc->'creators') c WHERE (c->>'deathdate')::int > 0 AND (c->>'deathdate')::int <= {ph})",
-            _Priority.GIN, **{nm: year}
-        )
-
-    # === Custom SQL ===
-    
-    def where(self, sql: str, **params) -> "SearchQuery":
-        """Add custom SQL condition. Runs last (lowest priority).
-        
-        Use named params with :name syntax.
-        
-        Examples:
-            .where("dc->>'publisher' = :pub", pub="Penguin")
-            .where("jsonb_array_length(dc->'creators') > :n", n=2)
-        """
-        remapped_sql = sql
-        remapped_params = {}
-        for key, value in params.items():
-            ph, nm = self._param(value)
-            remapped_sql = remapped_sql.replace(f":{key}", ph)
-            remapped_params[nm] = value
-        return self._add(remapped_sql, _Priority.GIN, **{**remapped_params})
-
-    # === Ordering ===
+    def crosswalk(self, cw: Crosswalk) -> "SearchQuery":
+        self._crosswalk = cw
+        return self
     
     def order_by(self, order: OrderBy) -> "SearchQuery":
         self._order = order
         return self
     
-    def _order_clause(self, params: dict[str, Any]) -> str:
-        # Use first search for relevance ordering
-        if self._order == "relevance" and self._searches:
-            txt, stype, col = self._searches[0]
-            self._uid += 1
-            nm = f"p{self._uid}"
-            params[nm] = txt
-            
-            if stype in (SearchType.FUZZY, SearchType.CONTAINS):
-                return f" ORDER BY word_similarity(:{nm}, {col}) DESC, downloads DESC"
-            
-            return f" ORDER BY ts_rank_cd({col}, websearch_to_tsquery('english', :{nm})) DESC, downloads DESC"
+    # === Search ===
+    
+    def search(self, txt: str, field: SearchField = SearchField.BOOK, type: SearchType = SearchType.FTS) -> "SearchQuery":
+        if not (txt and txt.strip()):
+            return self
+        txt = txt.strip()
+        fts_col, text_col = _FIELD_COLS[field]
         
-        orders = {
-            "relevance": " ORDER BY downloads DESC",
-            "downloads": " ORDER BY downloads DESC",
-            "title": " ORDER BY title ASC",
-            "author": " ORDER BY primary_author ASC NULLS LAST",
-        }
-        return orders.get(self._order, " ORDER BY downloads DESC")
+        if type == SearchType.FTS:
+            self._search.append((f"{fts_col} @@ websearch_to_tsquery('english', :q)", {"q": txt}, fts_col))
+        elif type == SearchType.FUZZY:
+            self._search.append((f":q <% {text_col}", {"q": txt}, text_col))
+        else:
+            self._search.append((f"{text_col} ILIKE :q", {"q": f"%{txt}%"}, text_col))
+        return self
+    
+    # === Filters ===
+    
+    def etext(self, nr: int) -> "SearchQuery":
+        self._filter.append(("book_id = :id", {"id": nr}))
+        return self
+    
+    def etexts(self, nrs: list[int]) -> "SearchQuery":
+        self._filter.append(("book_id = ANY(:ids)", {"ids": nrs}))
+        return self
+    
+    def downloads_gte(self, n: int) -> "SearchQuery":
+        self._filter.append(("downloads >= :dl", {"dl": n}))
+        return self
+    
+    def downloads_lte(self, n: int) -> "SearchQuery":
+        self._filter.append(("downloads <= :dl", {"dl": n}))
+        return self
+    
+    def public_domain(self) -> "SearchQuery":
+        self._filter.append(("copyrighted = 0", {}))
+        return self
+    
+    def copyrighted(self) -> "SearchQuery":
+        self._filter.append(("copyrighted = 1", {}))
+        return self
+    
+    def lang(self, code: str) -> "SearchQuery":
+        self._filter.append(("primary_lang = :lang", {"lang": code}))
+        return self
+    
+    def text_only(self) -> "SearchQuery":
+        self._filter.append(("is_audio = false", {}))
+        return self
+    
+    def audiobook(self) -> "SearchQuery":
+        self._filter.append(("is_audio = true", {}))
+        return self
+    
+    def has_files(self) -> "SearchQuery":
+        self._filter.append(("has_files = true", {}))
+        return self
+    
+    def has_cover(self) -> "SearchQuery":
+        self._filter.append(("has_cover = true", {}))
+        return self
+    
+    def author_born_after(self, year: int) -> "SearchQuery":
+        self._filter.append(("max_author_birthyear >= :y", {"y": year}))
+        return self
+    
+    def author_born_before(self, year: int) -> "SearchQuery":
+        self._filter.append(("min_author_birthyear <= :y", {"y": year}))
+        return self
+    
+    def released_after(self, date: str) -> "SearchQuery":
+        self._filter.append(("text_to_date_immutable(dc->>'date') >= CAST(:d AS date)", {"d": date}))
+        return self
+    
+    def released_before(self, date: str) -> "SearchQuery":
+        self._filter.append(("text_to_date_immutable(dc->>'date') <= CAST(:d AS date)", {"d": date}))
+        return self
+    
+    def locc(self, code: str) -> "SearchQuery":
+        self._filter.append(("dc->'coverage' @> CAST(:j AS jsonb)", {"j": f'[{{"id":"{code}"}}]'}))
+        return self
+    
+    def has_contributor(self, role: str) -> "SearchQuery":
+        self._filter.append(("dc->'creators' @> CAST(:j AS jsonb)", {"j": f'[{{"role":"{role}"}}]'}))
+        return self
+    
+    def file_type(self, ft: FileType) -> "SearchQuery":
+        self._filter.append(("dc->'format' @> CAST(:ft AS jsonb)", {"ft": f'[{{"mediatype":"{ft.value}"}}]'}))
+        return self
+    
+    def author_id(self, aid: int) -> "SearchQuery":
+        self._filter.append(("dc->'creators' @> CAST(:aid AS jsonb)", {"aid": f'[{{"id":{aid}}}]'}))
+        return self
+    
+    def subject_id(self, sid: int) -> "SearchQuery":
+        self._filter.append(("dc->'subjects' @> CAST(:sid AS jsonb)", {"sid": f'[{{"id":{sid}}}]'}))
+        return self
+    
+    def bookshelf_id(self, bid: int) -> "SearchQuery":
+        self._filter.append(("dc->'bookshelves' @> CAST(:bid AS jsonb)", {"bid": f'[{{"id":{bid}}}]'}))
+        return self
+    
+    def encoding(self, enc: Encoding) -> "SearchQuery":
+        self._filter.append(("dc->'format' @> CAST(:enc AS jsonb)", {"enc": f'[{{"encoding":"{enc.value}"}}]'}))
+        return self
+    
+    def author_died_after(self, year: int) -> "SearchQuery":
+        self._filter.append(("max_author_deathyear >= :y", {"y": year}))
+        return self
+    
+    def author_died_before(self, year: int) -> "SearchQuery":
+        self._filter.append(("min_author_deathyear <= :y", {"y": year}))
+        return self
+    
+    def where(self, sql: str, **params) -> "SearchQuery":
+        self._filter.append((sql, params))
+        return self
     
     # === Build ===
     
-    def _all_params(self) -> dict[str, Any]:
-        merged = {}
-        for c in self._conditions:
-            merged.update(c.params)
-        return merged
+    def _params(self) -> dict[str, Any]:
+        params = {}
+        for _, p, *_ in self._search:
+            params.update(p)
+        for _, p in self._filter:
+            params.update(p)
+        return params
+        
+    def _order_sql(self, params: dict) -> str:
+        """Build ORDER BY clause. Uses last search for relevance ranking."""
+        if self._order == OrderBy.RELEVANCE and self._search:
+            sql, p, col = self._search[-1]
+            params["rank_q"] = p["q"].replace("%", "")
+            if "<%" in sql or "ILIKE" in sql:
+                return f"word_similarity(:rank_q, {col}) DESC, downloads DESC"
+            return f"ts_rank_cd({col}, websearch_to_tsquery('english', :rank_q)) DESC, downloads DESC"
+        return _ORDER_SQL.get(self._order, "downloads DESC")
     
-    def _where(self) -> str:
-        if not self._conditions:
-            return ""
-        sorted_conditions = sorted(self._conditions, key=lambda c: c.priority)
-        return " WHERE " + " AND ".join(c.sql for c in sorted_conditions)
+    def build(self) -> tuple[str, dict]:
+        params = self._params()
+        order = self._order_sql(params)
+        limit, offset = self._page_size, (self._page - 1) * self._page_size
+        
+        search_sql = " AND ".join(s[0] for s in self._search) if self._search else None
+        filter_sql = " AND ".join(f[0] for f in self._filter) if self._filter else None
+        
+        if search_sql and filter_sql:
+            sql = f"SELECT {_SELECT} FROM (SELECT {_SUBQUERY} FROM mv_books_dc WHERE {search_sql}) t WHERE {filter_sql} ORDER BY {order} LIMIT {limit} OFFSET {offset}"
+        elif search_sql:
+            sql = f"SELECT {_SELECT} FROM mv_books_dc WHERE {search_sql} ORDER BY {order} LIMIT {limit} OFFSET {offset}"
+        elif filter_sql:
+            sql = f"SELECT {_SELECT} FROM mv_books_dc WHERE {filter_sql} ORDER BY {order} LIMIT {limit} OFFSET {offset}"
+        else:
+            sql = f"SELECT {_SELECT} FROM mv_books_dc ORDER BY {order} LIMIT {limit} OFFSET {offset}"
+        
+        return sql, params
     
-    def build(self, limit: int | None = None, offset: int | None = None) -> tuple[str, dict[str, Any]]:
-        params = self._all_params()
-        actual_limit = limit if limit is not None else self._page_size
-        actual_offset = offset if offset is not None else (self._page - 1) * self._page_size
+    def build_count(self) -> tuple[str, dict]:
+        params = self._params()
+        search_sql = " AND ".join(s[0] for s in self._search) if self._search else None
+        filter_sql = " AND ".join(f[0] for f in self._filter) if self._filter else None
         
-        # Separate conditions by type
-        search_conds = [c for c in self._conditions if c.priority in (_Priority.FTS, _Priority.TRGM)]
-        filter_conds = [c for c in self._conditions if c.priority not in (_Priority.FTS, _Priority.TRGM)]
+        if search_sql and filter_sql:
+            sql = f"SELECT COUNT(*) FROM (SELECT {_SUBQUERY} FROM mv_books_dc WHERE {search_sql}) t WHERE {filter_sql}"
+        elif search_sql:
+            sql = f"SELECT COUNT(*) FROM mv_books_dc WHERE {search_sql}"
+        elif filter_sql:
+            sql = f"SELECT COUNT(*) FROM mv_books_dc WHERE {filter_sql}"
+        else:
+            sql = "SELECT COUNT(*) FROM mv_books_dc"
         
-        # Columns needed for filtering and ordering
-        base_cols = """book_id, title, primary_author, downloads, dc,
-           copyrighted, primary_lang, is_audio, has_files, has_cover,
-           max_author_birthyear, min_author_birthyear"""
-        
-        # Add search columns for relevance ordering
-        for _, _, col in self._searches:
-            if col not in base_cols:
-                base_cols += f", {col}"
-        
-        order = self._order_clause(params)
-        
-        # Strategy: search in inner query, filters in outer
-        if search_conds and filter_conds:
-            search_where = " AND ".join(c.sql for c in search_conds)
-            filter_where = " AND ".join(c.sql for c in sorted(filter_conds, key=lambda c: c.priority))
-            
-            sql = f"""SELECT book_id, title, primary_author, downloads, dc 
-FROM (
-    SELECT {base_cols}
-    FROM mv_books_dc 
-    WHERE {search_where}
-) sub 
-WHERE {filter_where}{order} 
-LIMIT {actual_limit} OFFSET {actual_offset}"""
-            return sql, params
-        
-        # Only search conditions
-        if search_conds:
-            search_where = " AND ".join(c.sql for c in search_conds)
-            sql = f"""SELECT book_id, title, primary_author, downloads, dc 
-FROM mv_books_dc 
-WHERE {search_where}{order} 
-LIMIT {actual_limit} OFFSET {actual_offset}"""
-            return sql, params
-        
-        # Only filter conditions (or none)
-        where = self._where()
-        sql = f"""SELECT book_id, title, primary_author, downloads, dc 
-FROM mv_books_dc{where}{order} 
-LIMIT {actual_limit} OFFSET {actual_offset}"""
         return sql, params
 
-    def build_count(self) -> tuple[str, dict[str, Any]]:
-        params = self._all_params()
-        
-        search_conds = [c for c in self._conditions if c.priority in (_Priority.FTS, _Priority.TRGM)]
-        filter_conds = [c for c in self._conditions if c.priority not in (_Priority.FTS, _Priority.TRGM)]
-        
-        base_cols = """book_id, dc, copyrighted, primary_lang, is_audio, has_files, has_cover,
-           max_author_birthyear, min_author_birthyear, downloads"""
-        
-        if search_conds and filter_conds:
-            search_where = " AND ".join(c.sql for c in search_conds)
-            filter_where = " AND ".join(c.sql for c in sorted(filter_conds, key=lambda c: c.priority))
-            
-            sql = f"""SELECT COUNT(*) FROM (
-    SELECT 1 FROM (
-        SELECT {base_cols}
-        FROM mv_books_dc 
-        WHERE {search_where}
-    ) sub 
-    WHERE {filter_where}
-) t"""
-            return sql, params
-        
-        return f"SELECT COUNT(*) FROM mv_books_dc{self._where()}", params
+
+# =============================================================================
+# FullTextSearch
+# =============================================================================
 
 class FullTextSearch:
-    """Search interface for mv_books_dc."""
-    
     def __init__(self, config: Config | None = None):
         cfg = config or Config()
         self.engine = create_engine(
             f"postgresql://{cfg.PGUSER}@{cfg.PGHOST}:{cfg.PGPORT}/{cfg.PGDATABASE}",
-            pool_pre_ping=True,
-            pool_recycle=300,
+            pool_pre_ping=True, pool_recycle=300,
         )
         self.Session = sessionmaker(bind=self.engine)
+        self._custom_transformer: Callable | None = None
     
-    def query(self) -> SearchQuery:
-        return SearchQuery()
+    def set_custom_transformer(self, fn: Callable) -> None:
+        """Set custom transformer for Crosswalk.CUSTOM."""
+        self._custom_transformer = fn
+    
+    def query(self, crosswalk: Crosswalk = Crosswalk.FULL) -> SearchQuery:
+        q = SearchQuery()
+        q._crosswalk = crosswalk
+        return q
+    
+    def _transform(self, row, cw: Crosswalk) -> dict:
+        if cw == Crosswalk.CUSTOM and self._custom_transformer:
+            return self._custom_transformer(row)
+        return _CROSSWALK_MAP[cw](row)
     
     def execute(self, q: SearchQuery) -> dict:
         with self.Session() as session:
-            total = self._exact_count(session, q)
+            count_sql, count_params = q.build_count()
+            total = session.execute(text(count_sql), count_params).scalar() or 0
             total_pages = max(1, (total + q._page_size - 1) // q._page_size)
-            
-            page = max(1, min(q._page, total_pages))
-            q._page = page
+            q._page = max(1, min(q._page, total_pages))
             
             sql, params = q.build()
             rows = session.execute(text(sql), params).fetchall()
-            
-            results = [
-                {"book_id": r.book_id, "title": r.title, "author": r.primary_author, "downloads": r.downloads, "dc": r.dc}
-                for r in rows
-            ]
         
         return {
-            "results": results,
-            "page": page,
-            "page_size": q._page_size,
-            "total": total,
-            "total_pages": total_pages,
+            "results": [self._transform(r, q._crosswalk) for r in rows],
+            "page": q._page, "page_size": q._page_size,
+            "total": total, "total_pages": total_pages
         }
     
-    def _exact_count(self, session, q: SearchQuery) -> int:
-        sql, params = q.build_count()
-        return session.execute(text(sql), params).scalar() or 0
-    
-    def get(self, etext_nr: int) -> dict | None:
-        """Get a single book by etext number."""
+    def get(self, etext_nr: int, crosswalk: Crosswalk = Crosswalk.FULL) -> dict | None:
         with self.Session() as session:
-            sql = "SELECT book_id, title, primary_author, downloads, dc FROM mv_books_dc WHERE book_id = :id"
-            row = session.execute(text(sql), {"id": etext_nr}).fetchone()
-            if not row:
-                return None
-            return {"book_id": row.book_id, "title": row.title, "author": row.primary_author, "downloads": row.downloads, "dc": row.dc}
+            row = session.execute(text(f"SELECT {_SELECT} FROM mv_books_dc WHERE book_id = :id"), {"id": etext_nr}).fetchone()
+            return self._transform(row, crosswalk) if row else None
     
-    def get_many(self, etext_nrs: list[int]) -> list[dict]:
-        """Get multiple books by etext numbers in single query."""
-        if not etext_nrs:
+    def get_many(self, nrs: list[int], crosswalk: Crosswalk = Crosswalk.FULL) -> list[dict]:
+        if not nrs:
             return []
         with self.Session() as session:
-            sql = "SELECT book_id, title, primary_author, downloads, dc FROM mv_books_dc WHERE book_id = ANY(:ids)"
-            rows = session.execute(text(sql), {"ids": etext_nrs}).fetchall()
-            return [
-                {"book_id": r.book_id, "title": r.title, "author": r.primary_author, "downloads": r.downloads, "dc": r.dc}
-                for r in rows
-            ]
+            rows = session.execute(text(f"SELECT {_SELECT} FROM mv_books_dc WHERE book_id = ANY(:ids)"), {"ids": nrs}).fetchall()
+            return [self._transform(r, crosswalk) for r in rows]
     
     def count(self, q: SearchQuery) -> int:
         with self.Session() as session:

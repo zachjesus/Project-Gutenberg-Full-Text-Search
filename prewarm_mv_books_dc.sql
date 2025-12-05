@@ -92,8 +92,10 @@ SELECT COUNT(*) FROM mv_books_dc WHERE primary_lang = 'en';
 SELECT COUNT(*) FROM mv_books_dc WHERE is_audio = true;
 SELECT COUNT(*) FROM mv_books_dc WHERE has_files = true;
 SELECT COUNT(*) FROM mv_books_dc WHERE has_cover = true;
-SELECT COUNT(*) FROM mv_books_dc WHERE max_author_birthyear > 1800;
-SELECT COUNT(*) FROM mv_books_dc WHERE min_author_birthyear < 1900;
+SELECT COUNT(*) FROM mv_books_dc WHERE max_author_birthyear > 1000;
+SELECT COUNT(*) FROM mv_books_dc WHERE min_author_birthyear < 2000;
+SELECT COUNT(*) FROM mv_books_dc WHERE max_author_deathyear > 1000;
+SELECT COUNT(*) FROM mv_books_dc WHERE min_author_deathyear < 2000;
 SELECT COUNT(*) FROM mv_books_dc WHERE text_to_date_immutable(dc->>'date') > '2020-01-01'::date;
 
 -- ============================================================================
