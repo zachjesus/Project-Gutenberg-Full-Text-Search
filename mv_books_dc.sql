@@ -34,6 +34,23 @@ SELECT
     b.downloads,
     b.copyrighted,
     
+    -- All authors sorted by heading then name (pipe-delimited for display)
+    (
+        SELECT STRING_AGG(au.author, ' | ' ORDER BY mba.heading, au.author)
+        FROM mn_books_authors mba
+        JOIN authors au ON mba.fk_authors = au.pk
+        WHERE mba.fk_books = b.pk
+    ) AS all_authors,
+    
+    -- All subjects sorted alphabetically (pipe-delimited for display)
+    (
+        SELECT STRING_AGG(s.subject, ' | ' ORDER BY s.subject)
+        FROM mn_books_subjects mbs
+        JOIN subjects s ON mbs.fk_subjects = s.pk
+        WHERE mbs.fk_books = b.pk
+    ) AS all_subjects,
+    
+    -- Combined searchable text: title + all authors + all subjects + all bookshelves + all attributes
     CONCAT_WS(' ', 
         b.title,
         (SELECT STRING_AGG(au.author, ' ')
@@ -43,7 +60,14 @@ SELECT
         (SELECT STRING_AGG(s.subject, ' ')
          FROM mn_books_subjects mbs
          JOIN subjects s ON mbs.fk_subjects = s.pk
-         WHERE mbs.fk_books = b.pk)
+         WHERE mbs.fk_books = b.pk),
+        (SELECT STRING_AGG(bs.bookshelf, ' ')
+         FROM mn_books_bookshelves mbbs
+         JOIN bookshelves bs ON mbbs.fk_bookshelves = bs.pk
+         WHERE mbbs.fk_books = b.pk),
+        (SELECT STRING_AGG(REGEXP_REPLACE(a.text, '\$[a-z0-9]', ' ', 'gi'), ' ')
+         FROM attributes a
+         WHERE a.fk_books = b.pk)
     ) AS book_text,
     
     COALESCE((
@@ -134,24 +158,6 @@ SELECT
         WHERE a.fk_books = b.pk AND a.tsvec IS NOT NULL
     ), ''::tsvector) AS attribute_tsvec,
     
-    (
-        SELECT au.author
-        FROM mn_books_authors mba
-        JOIN authors au ON mba.fk_authors = au.pk
-        WHERE mba.fk_books = b.pk
-        ORDER BY mba.heading
-        LIMIT 1
-    ) AS primary_author,
-    
-    (
-        SELECT s.subject
-        FROM mn_books_subjects mbs
-        JOIN subjects s ON mbs.fk_subjects = s.pk
-        WHERE mbs.fk_books = b.pk
-        ORDER BY s.subject
-        LIMIT 1
-    ) AS primary_subject,
-    
     -- Bookshelf text for fuzzy/contains search
     (
         SELECT STRING_AGG(bs.bookshelf, ' ')
@@ -187,7 +193,6 @@ SELECT
 
     -- Everything else in JSONB
     jsonb_build_object(
-        -- ...existing JSONB content stays the same...
         'identifier', b.pk,
         'title', b.title,
         'titleData', (
@@ -216,12 +221,6 @@ SELECT
             SELECT a.text 
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 206
-            LIMIT 1
-        ),
-        'uniformTitle', (
-            SELECT a.text 
-            FROM attributes a 
-            WHERE a.fk_books = b.pk AND a.fk_attriblist = 240
             LIMIT 1
         ),
         'creators', COALESCE((
@@ -262,21 +261,10 @@ SELECT
             JOIN subjects s ON mbs.fk_subjects = s.pk
             WHERE mbs.fk_books = b.pk
         ), '[]'::jsonb),
-        'description', (
-            SELECT jsonb_agg(a.text ORDER BY a.pk)
-            FROM attributes a 
-            WHERE a.fk_books = b.pk AND a.fk_attriblist = 500
-        ),
         'summary', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 520
-        ),
-        'tableOfContents', (
-            SELECT a.text 
-            FROM attributes a 
-            WHERE a.fk_books = b.pk AND a.fk_attriblist = 505
-            LIMIT 1
         ),
         'publisher', (
             SELECT jsonb_build_object(
@@ -329,12 +317,6 @@ SELECT
               AND f.obsoleted = 0 
               AND f.diskstatus = 0
         ), '[]'::jsonb),
-        'physicalDescription', (
-            SELECT a.text 
-            FROM attributes a 
-            WHERE a.fk_books = b.pk AND a.fk_attriblist = 300
-            LIMIT 1
-        ),
         'language', COALESCE((
             SELECT jsonb_agg(
                 jsonb_build_object('code', l.pk, 'name', l.lang)
@@ -343,12 +325,6 @@ SELECT
             JOIN langs l ON mbl.fk_langs = l.pk
             WHERE mbl.fk_books = b.pk
         ), '[{"code": "en", "name": "English"}]'::jsonb),
-        'languageNote', (
-            SELECT a.text 
-            FROM attributes a 
-            WHERE a.fk_books = b.pk AND a.fk_attriblist = 546
-            LIMIT 1
-        ),
         'source', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
             FROM attributes a 
@@ -493,8 +469,8 @@ CREATE INDEX idx_mv_fts_attribute ON mv_books_dc USING GIN (attribute_tsvec);
 -- ============================================================================
 CREATE INDEX idx_mv_contains_title ON mv_books_dc USING GIN (title gin_trgm_ops);
 CREATE INDEX idx_mv_contains_subtitle ON mv_books_dc USING GIN (subtitle gin_trgm_ops);
-CREATE INDEX idx_mv_contains_author ON mv_books_dc USING GIN (primary_author gin_trgm_ops);
-CREATE INDEX idx_mv_contains_subject ON mv_books_dc USING GIN (primary_subject gin_trgm_ops);
+CREATE INDEX idx_mv_contains_author ON mv_books_dc USING GIN (all_authors gin_trgm_ops);
+CREATE INDEX idx_mv_contains_subject ON mv_books_dc USING GIN (all_subjects gin_trgm_ops);
 CREATE INDEX idx_mv_contains_book ON mv_books_dc USING GIN (book_text gin_trgm_ops);
 CREATE INDEX idx_mv_contains_bookshelf ON mv_books_dc USING GIN (bookshelf_text gin_trgm_ops);
 
@@ -503,8 +479,8 @@ CREATE INDEX idx_mv_contains_bookshelf ON mv_books_dc USING GIN (bookshelf_text 
 -- ============================================================================
 CREATE INDEX idx_mv_fuzzy_title ON mv_books_dc USING GIST (title gist_trgm_ops);
 CREATE INDEX idx_mv_fuzzy_subtitle ON mv_books_dc USING GIST (subtitle gist_trgm_ops);
-CREATE INDEX idx_mv_fuzzy_author ON mv_books_dc USING GIST (primary_author gist_trgm_ops);
-CREATE INDEX idx_mv_fuzzy_subject ON mv_books_dc USING GIST (primary_subject gist_trgm_ops);
+CREATE INDEX idx_mv_fuzzy_author ON mv_books_dc USING GIST (all_authors gist_trgm_ops);
+CREATE INDEX idx_mv_fuzzy_subject ON mv_books_dc USING GIST (all_subjects gist_trgm_ops);
 CREATE INDEX idx_mv_fuzzy_book ON mv_books_dc USING GIST (book_text gist_trgm_ops);
 CREATE INDEX idx_mv_fuzzy_bookshelf ON mv_books_dc USING GIST (bookshelf_text gist_trgm_ops);
 

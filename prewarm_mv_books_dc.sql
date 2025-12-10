@@ -69,8 +69,8 @@ SELECT COUNT(*) FROM mv_books_dc WHERE attribute_tsvec @@ to_tsquery('english', 
 -- ============================================================================
 SELECT COUNT(*) FROM mv_books_dc WHERE title ILIKE '%adventure%';
 SELECT COUNT(*) FROM mv_books_dc WHERE subtitle ILIKE '%volume%';
-SELECT COUNT(*) FROM mv_books_dc WHERE primary_author ILIKE '%twain%';
-SELECT COUNT(*) FROM mv_books_dc WHERE primary_subject ILIKE '%fiction%';
+SELECT COUNT(*) FROM mv_books_dc WHERE all_authors ILIKE '%twain%';
+SELECT COUNT(*) FROM mv_books_dc WHERE all_subjects ILIKE '%fiction%';
 SELECT COUNT(*) FROM mv_books_dc WHERE book_text ILIKE '%shakespeare%';
 SELECT COUNT(*) FROM mv_books_dc WHERE bookshelf_text ILIKE '%science%';
 
@@ -79,8 +79,8 @@ SELECT COUNT(*) FROM mv_books_dc WHERE bookshelf_text ILIKE '%science%';
 -- ============================================================================
 SELECT COUNT(*) FROM mv_books_dc WHERE 'shakspeare' <% title;
 SELECT COUNT(*) FROM mv_books_dc WHERE 'volumee' <% subtitle;
-SELECT COUNT(*) FROM mv_books_dc WHERE 'twian' <% primary_author;
-SELECT COUNT(*) FROM mv_books_dc WHERE 'ficton' <% primary_subject;
+SELECT COUNT(*) FROM mv_books_dc WHERE 'twian' <% all_authors;
+SELECT COUNT(*) FROM mv_books_dc WHERE 'ficton' <% all_subjects;
 SELECT COUNT(*) FROM mv_books_dc WHERE 'shakspere' <% book_text;
 SELECT COUNT(*) FROM mv_books_dc WHERE 'scince' <% bookshelf_text;
 

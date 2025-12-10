@@ -71,7 +71,7 @@ class OrderBy(str, Enum):
 class Crosswalk(str, Enum):
     FULL = "full"
     PG = "pg"
-    SCHEMA_ORG = "schema_org"
+    OPDS = "opds"
     CUSTOM = "custom"
     MINI = "mini"
 
@@ -84,8 +84,8 @@ _FIELD_COLS = {
     SearchField.BOOK:      ("tsvec",           "book_text"),
     SearchField.TITLE:     ("title_tsvec",     "title"),
     SearchField.SUBTITLE:  ("subtitle_tsvec",  "subtitle"),
-    SearchField.AUTHOR:    ("author_tsvec",    "primary_author"),
-    SearchField.SUBJECT:   ("subject_tsvec",   "primary_subject"),
+    SearchField.AUTHOR:    ("author_tsvec",    "all_authors"),
+    SearchField.SUBJECT:   ("subject_tsvec",   "all_subjects"),
     SearchField.BOOKSHELF: ("bookshelf_tsvec", "bookshelf_text"),
     SearchField.ATTRIBUTE: ("attribute_tsvec", "attribute_text"),
 }
@@ -104,20 +104,20 @@ _TRIGRAM_FIELDS = {
 _ORDER_SQL = {
     OrderBy.DOWNLOADS: "downloads DESC",
     OrderBy.TITLE: "title ASC",
-    OrderBy.AUTHOR: "primary_author ASC NULLS LAST",
+    OrderBy.AUTHOR: "all_authors ASC NULLS LAST",
     OrderBy.RELEASE_DATE: "text_to_date_immutable(dc->>'date') DESC NULLS LAST",
     OrderBy.RANDOM: "RANDOM()",
 }
 
-_SELECT = "book_id, title, primary_author, downloads, dc"
+_SELECT = "book_id, title, all_authors, downloads, dc"
 
-_SUBQUERY = """book_id, title, primary_author, downloads, dc,
+_SUBQUERY = """book_id, title, all_authors, all_subjects, downloads, dc,
     copyrighted, primary_lang, is_audio,
     max_author_birthyear, min_author_birthyear,
     max_author_deathyear, min_author_deathyear,
     locc_codes,
     tsvec, title_tsvec, subtitle_tsvec, author_tsvec, subject_tsvec, bookshelf_tsvec, attribute_tsvec,
-    book_text, bookshelf_text, attribute_text, primary_subject, subtitle"""
+    book_text, bookshelf_text, attribute_text, subtitle"""
 
 
 # =============================================================================
@@ -125,10 +125,10 @@ _SUBQUERY = """book_id, title, primary_author, downloads, dc,
 # =============================================================================
 
 def _crosswalk_full(row) -> dict[str, Any]:
-    return {"book_id": row.book_id, "title": row.title, "author": row.primary_author, "downloads": row.downloads, "dc": row.dc}
+    return {"book_id": row.book_id, "title": row.title, "author": row.all_authors, "downloads": row.downloads, "dc": row.dc}
 
 def _crosswalk_mini(row) -> dict[str, Any]:
-    return {"id": row.book_id, "title": row.title, "author": row.primary_author, "downloads": row.downloads}
+    return {"id": row.book_id, "title": row.title, "author": row.all_authors, "downloads": row.downloads}
 
 def _crosswalk_pg(row) -> dict[str, Any]:
     dc = row.dc or {}
@@ -144,16 +144,126 @@ def _crosswalk_pg(row) -> dict[str, Any]:
         "cover_url": (dc.get("coverpage") or [None])[0],
     }
 
-def _crosswalk_schema_org(row) -> dict[str, Any]:
+def _crosswalk_opds(row) -> dict[str, Any]:
+    """OPDS 2.0 crosswalk using Readium Web Publication Manifest context."""
     dc = row.dc or {}
-    return {"@context": "https://schema.org", "@type": "Book", "identifier": row.book_id, 
-            "name": row.title, "author": row.primary_author, "datePublished": dc.get("date")}
+    
+    # Primary creator with dates
+    creators = dc.get("creators", [])
+    primary = creators[0] if creators else {}
+    
+    # Author object - name includes dates for display, sortAs without
+    author = None
+    if primary.get("name"):
+        name = primary["name"]
+        if primary.get("birthdate") or primary.get("deathdate"):
+            name = f"{name}, {primary.get('birthdate') or '?'}-{primary.get('deathdate') or ''}"
+        author = {"name": name, "sortAs": primary["name"]}
+    
+    # Cover image URL
+    cover = None
+    for f in dc.get("format", []):
+        ft = f.get("filetype") or ""
+        if "cover.medium" in ft:
+            cover = f"https://www.gutenberg.org/{f['filename']}"
+            break
+        elif "cover" in ft and not cover:
+            cover = f"https://www.gutenberg.org/{f['filename']}"
+    
+    # Published date (PG release date)
+    published = dc.get("date")
+    
+    # Modified date from marc 508 "Updated:"
+    modified = None
+    for m in dc.get("marc", []):
+        if m.get("code") == 508:
+            txt = m.get("text") or ""
+            if "Updated:" in txt:
+                modified = txt.split("Updated:")[1].strip().split()[0].rstrip(".")
+                break
+    
+    # Reading level from marc 908
+    reading_level = None
+    for m in dc.get("marc", []):
+        if m.get("code") == 908:
+            reading_level = m.get("text")
+            break
+    
+    # Subjects (just subject headings, no LoCC)
+    subjects = [s["subject"] for s in dc.get("subjects", []) if s.get("subject")]
+    
+    # Bookshelves as collection objects
+    bookshelves = [
+        {"name": b["bookshelf"], "identifier": f"https://www.gutenberg.org/ebooks/bookshelf/{b.get('id', '')}"}
+        for b in dc.get("bookshelves", []) if b.get("bookshelf")
+    ]
+    
+    # LoCC as collection objects
+    locc = [
+        {"name": c["locc"], "identifier": f"https://www.gutenberg.org/ebooks/locc/{c.get('id', '')}"}
+        for c in dc.get("coverage", []) if c.get("locc")
+    ]
+    
+    # Build description with appended metadata
+    desc_parts = []
+    if summary := (dc.get("summary") or [None])[0]:
+        desc_parts.append(summary)
+    if notes := dc.get("description"):
+        desc_parts.append(f"Notes: {'; '.join(notes)}")
+    if credits := (dc.get("credits") or [None])[0]:
+        desc_parts.append(f"Credits: {credits}")
+    if reading_level:
+        desc_parts.append(f"Reading Level: {reading_level}")
+    if dcmitype := [t["dcmitype"] for t in dc.get("type", []) if t.get("dcmitype")]:
+        desc_parts.append(f"Category: {', '.join(dcmitype)}")
+    if rights := dc.get("rights"):
+        desc_parts.append(f"Rights: {rights}")
+    desc_parts.append(f"Downloads: {row.downloads}")
+    
+    description = "\n\n".join(desc_parts) if desc_parts else None
+    
+    # Build metadata - no blank values per spec
+    metadata = {
+        "@type": "http://schema.org/Book",
+        "identifier": f"urn:gutenberg:{row.book_id}",
+        "title": row.title,
+        "language": (dc.get("language") or [{}])[0].get("code", "en"),
+    }
+    
+    if author:
+        metadata["author"] = author
+    if published:
+        metadata["published"] = published
+    if modified:
+        metadata["modified"] = modified
+    if description:
+        metadata["description"] = description
+    if subjects:
+        metadata["subject"] = subjects
+    if pub_raw := (dc.get("publisher") or {}).get("raw"):
+        metadata["publisher"] = pub_raw
+    
+    # belongsTo for bookshelves AND LoCC as collections
+    collections = bookshelves + locc
+    if collections:
+        metadata["belongsTo"] = {"collection": collections}
+    
+    # Links
+    links = [{"rel": "self", "href": f"https://www.gutenberg.org/ebooks/{row.book_id}", "type": "text/html"}]
+    
+    # Images
+    images = [{"href": cover, "type": "image/jpeg"}] if cover else []
+    
+    result = {"metadata": metadata, "links": links}
+    if images:
+        result["images"] = images
+    return result
 
 _CROSSWALK_MAP = {
     Crosswalk.FULL: _crosswalk_full, 
     Crosswalk.MINI: _crosswalk_mini,
     Crosswalk.PG: _crosswalk_pg, 
-    Crosswalk.SCHEMA_ORG: _crosswalk_schema_org, 
+    Crosswalk.OPDS: _crosswalk_opds, 
     Crosswalk.CUSTOM: _crosswalk_full  # Default fallback if no custom set
 }
 
