@@ -59,16 +59,6 @@ SELECT
         WHERE mbc.fk_books = b.pk AND mbc.fk_categories IN (1, 2)
     ) AS is_audio,
     
-    EXISTS (
-        SELECT 1 FROM files f
-        WHERE f.fk_books = b.pk AND f.obsoleted = 0 AND f.diskstatus = 0
-    ) AS has_files,
-    
-    EXISTS (
-        SELECT 1 FROM attributes a 
-        WHERE a.fk_books = b.pk AND a.fk_attriblist = 901
-    ) AS has_cover,
-    
     (
         SELECT CASE 
             WHEN a.text LIKE '%$b%' THEN 
@@ -107,6 +97,14 @@ SELECT
         JOIN authors au ON mba.fk_authors = au.pk
         WHERE mba.fk_books = b.pk AND au.died_floor > 0
     ) AS min_author_deathyear,
+    
+    -- LoCC codes as array for fast filtering
+    COALESCE((
+        SELECT ARRAY_AGG(lc.pk)
+        FROM mn_books_loccs mblc
+        JOIN loccs lc ON mblc.fk_loccs = lc.pk
+        WHERE mblc.fk_books = b.pk
+    ), ARRAY[]::text[]) AS locc_codes,
     
     -- Reuse existing tsvec from authors table (already indexed there)
     COALESCE((
@@ -189,17 +187,9 @@ SELECT
 
     -- Everything else in JSONB
     jsonb_build_object(
-        -- ========================================================================
-        -- DUBLIN CORE: Identifier
-        -- ========================================================================
+        -- ...existing JSONB content stays the same...
         'identifier', b.pk,
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Title (MARC 245)
-        -- ========================================================================
         'title', b.title,
-        
-        -- Full MARC 245 with subtitle parsing (splits on $b)
         'titleData', (
             SELECT jsonb_build_object(
                 'full', a.text,
@@ -217,41 +207,23 @@ SELECT
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 245
             LIMIT 1
         ),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Alternative Title (MARC 246)
-        -- ========================================================================
         'alternative', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 246
         ),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Alternative Title Variant (MARC 206)
-        -- Maps to dc.alt_title in DublinCoreMapping.py
-        -- ========================================================================
         'altTitle', (
             SELECT a.text 
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 206
             LIMIT 1
         ),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Uniform Title (MARC 240)
-        -- ========================================================================
         'uniformTitle', (
             SELECT a.text 
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 240
             LIMIT 1
         ),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Creator/Contributors (with MARC relator codes)
-        -- Maps to dc.authors in DublinCoreMapping.py
-        -- ========================================================================
         'creators', COALESCE((
             SELECT jsonb_agg(
                 jsonb_build_object(
@@ -281,11 +253,6 @@ SELECT
             JOIN roles r ON mba.fk_roles = r.pk
             WHERE mba.fk_books = b.pk
         ), '[]'::jsonb),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Subject (LCSH)
-        -- Maps to dc.subjects in DublinCoreMapping.py
-        -- ========================================================================
         'subjects', COALESCE((
             SELECT jsonb_agg(
                 jsonb_build_object('id', s.pk, 'subject', s.subject)
@@ -295,42 +262,22 @@ SELECT
             JOIN subjects s ON mbs.fk_subjects = s.pk
             WHERE mbs.fk_books = b.pk
         ), '[]'::jsonb),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Description (MARC 500 - General Note)
-        -- Maps to dc.notes in DublinCoreMapping.py
-        -- ========================================================================
         'description', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 500
         ),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Summary (MARC 520)
-        -- ========================================================================
         'summary', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 520
         ),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Table of Contents (MARC 505)
-        -- Maps to dc.contents in DublinCoreMapping.py
-        -- ========================================================================
         'tableOfContents', (
             SELECT a.text 
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 505
             LIMIT 1
         ),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Publisher (MARC 260, 264)
-        -- Maps to dc.pubinfo in DublinCoreMapping.py
-        -- Parses $a (place), $b (publisher), $c (years) per parse260()
-        -- ========================================================================
         'publisher', (
             SELECT jsonb_build_object(
                 'raw', a.text,
@@ -352,17 +299,7 @@ SELECT
             ORDER BY a.fk_attriblist
             LIMIT 1
         ),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Date
-        -- Maps to dc.release_date in DublinCoreMapping.py
-        -- ========================================================================
         'date', b.release_date,
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Type (DCMI Types)
-        -- Maps to dc.dcmitypes in DublinCoreMapping.py
-        -- ========================================================================
         'type', COALESCE((
             SELECT jsonb_agg(
                 jsonb_build_object('id', d.pk, 'dcmitype', d.dcmitype, 'description', d.description)
@@ -371,11 +308,6 @@ SELECT
             JOIN dcmitypes d ON mbc.fk_categories = d.pk
             WHERE mbc.fk_books = b.pk
         ), '[{"id": 1, "dcmitype": "Text", "description": "Text"}]'::jsonb),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Format (Files)
-        -- Maps to dc.files in DublinCoreMapping.py
-        -- ========================================================================
         'format', COALESCE((
             SELECT jsonb_agg(
                 jsonb_build_object(
@@ -397,19 +329,12 @@ SELECT
               AND f.obsoleted = 0 
               AND f.diskstatus = 0
         ), '[]'::jsonb),
-        
-        -- Physical Description (MARC 300)
         'physicalDescription', (
             SELECT a.text 
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 300
             LIMIT 1
         ),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Language
-        -- Maps to dc.languages in DublinCoreMapping.py
-        -- ========================================================================
         'language', COALESCE((
             SELECT jsonb_agg(
                 jsonb_build_object('code', l.pk, 'name', l.lang)
@@ -418,37 +343,22 @@ SELECT
             JOIN langs l ON mbl.fk_langs = l.pk
             WHERE mbl.fk_books = b.pk
         ), '[{"code": "en", "name": "English"}]'::jsonb),
-        
-        -- Language Note (MARC 546)
         'languageNote', (
             SELECT a.text 
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 546
             LIMIT 1
         ),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Source (MARC 534 - Original Version Note)
-        -- ========================================================================
         'source', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 534
         ),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Relation (MARC 787 - Other Relationship Entry)
-        -- ========================================================================
         'relation', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 787
         ),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Coverage (LoCC)
-        -- Maps to dc.loccs in DublinCoreMapping.py
-        -- ========================================================================
         'coverage', COALESCE((
             SELECT jsonb_agg(
                 jsonb_build_object('id', lc.pk, 'locc', lc.locc)
@@ -457,20 +367,10 @@ SELECT
             JOIN loccs lc ON mblc.fk_loccs = lc.pk
             WHERE mblc.fk_books = b.pk
         ), '[]'::jsonb),
-        
-        -- ========================================================================
-        -- DUBLIN CORE: Rights
-        -- Maps to dc.rights in DublinCoreMapping.py
-        -- ========================================================================
         'rights', CASE 
             WHEN b.copyrighted = 1 THEN 'Copyrighted. Read the copyright notice inside this book for details.'
             ELSE 'Public domain in the USA.'
         END,
-        
-        -- ========================================================================
-        -- PG EXTENSIONS: Bookshelves
-        -- Maps to dc.bookshelves in DublinCoreMapping.py
-        -- ========================================================================
         'bookshelves', COALESCE((
             SELECT jsonb_agg(
                 jsonb_build_object('id', bs.pk, 'bookshelf', bs.bookshelf)
@@ -480,11 +380,6 @@ SELECT
             JOIN bookshelves bs ON mbbs.fk_bookshelves = bs.pk
             WHERE mbbs.fk_books = b.pk
         ), '[]'::jsonb),
-        
-        -- ========================================================================
-        -- PG EXTENSIONS: Credits (MARC 508)
-        -- Maps to dc.credit in DublinCoreMapping.py
-        -- ========================================================================
         'credits', (
             SELECT jsonb_agg(
                 TRIM(
@@ -499,38 +394,24 @@ SELECT
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 508
         ),
-        
-        -- ========================================================================
-        -- PG EXTENSIONS: Cover Page (MARC 901)
-        -- ========================================================================
         'coverpage', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 901
         ),
-        
-        -- ========================================================================
-        -- PG EXTENSIONS: Downloads
-        -- ========================================================================
         'downloads', b.downloads,
-        
-        -- ========================================================================
-        -- PG EXTENSIONS: Project Gutenberg specific fields (MARC 904-907)
-        -- ========================================================================
         'scanUrls', (
             SELECT a.text 
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 904
             LIMIT 1
         ),
-        
         'requestKey', (
             SELECT a.text 
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 905
             LIMIT 1
         ),
-        
         'pubInfo906', (
             SELECT jsonb_build_object(
                 'raw', a.text,
@@ -547,17 +428,12 @@ SELECT
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 906
             LIMIT 1
         ),
-        
         'pubCountry', (
             SELECT a.text 
             FROM attributes a 
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 907
             LIMIT 1
         ),
-        
-        -- ========================================================================
-        -- COMPLETE MARC ATTRIBUTES
-        -- ========================================================================
         'marc', COALESCE((
             SELECT jsonb_agg(
                 jsonb_build_object(
@@ -581,66 +457,63 @@ FROM books b;
 -- ============================================================================
 
 -- Primary key
-CREATE UNIQUE INDEX idx_mv_dc_pk ON mv_books_dc (book_id);
+CREATE UNIQUE INDEX idx_mv_pk ON mv_books_dc (book_id);
 
--- B-tree: ORDER BY / range filters
-CREATE INDEX idx_mv_dc_downloads ON mv_books_dc (downloads DESC);
+-- ============================================================================
+-- B-TREE: Filtering & Sorting
+-- ============================================================================
+CREATE INDEX idx_mv_btree_downloads ON mv_books_dc (downloads DESC);
+CREATE INDEX idx_mv_btree_copyrighted ON mv_books_dc (copyrighted);
+CREATE INDEX idx_mv_btree_lang ON mv_books_dc (primary_lang);
+CREATE INDEX idx_mv_btree_is_audio ON mv_books_dc (is_audio) WHERE is_audio = true;
+CREATE INDEX idx_mv_btree_birthyear_max ON mv_books_dc (max_author_birthyear) WHERE max_author_birthyear IS NOT NULL;
+CREATE INDEX idx_mv_btree_birthyear_min ON mv_books_dc (min_author_birthyear) WHERE min_author_birthyear IS NOT NULL;
+CREATE INDEX idx_mv_btree_deathyear_max ON mv_books_dc (max_author_deathyear) WHERE max_author_deathyear IS NOT NULL;
+CREATE INDEX idx_mv_btree_deathyear_min ON mv_books_dc (min_author_deathyear) WHERE min_author_deathyear IS NOT NULL;
+CREATE INDEX idx_mv_btree_date ON mv_books_dc (text_to_date_immutable(dc->>'date'));
 
--- B-tree: top-level filter columns
-CREATE INDEX idx_mv_dc_copyrighted ON mv_books_dc (copyrighted);
-CREATE INDEX idx_mv_dc_lang ON mv_books_dc (primary_lang);
-CREATE INDEX idx_mv_dc_is_audio ON mv_books_dc (is_audio);
-CREATE INDEX idx_mv_dc_has_files ON mv_books_dc (has_files) WHERE has_files = true;
-CREATE INDEX idx_mv_dc_has_cover ON mv_books_dc (has_cover) WHERE has_cover = true;
-CREATE INDEX idx_mv_dc_max_birthyear ON mv_books_dc (max_author_birthyear) WHERE max_author_birthyear IS NOT NULL;
-CREATE INDEX idx_mv_dc_min_birthyear ON mv_books_dc (min_author_birthyear) WHERE min_author_birthyear IS NOT NULL;
-CREATE INDEX idx_mv_dc_max_deathyear ON mv_books_dc (max_author_deathyear) WHERE max_author_deathyear IS NOT NULL;
-CREATE INDEX idx_mv_dc_min_deathyear ON mv_books_dc (min_author_deathyear) WHERE min_author_deathyear IS NOT NULL;
+-- ============================================================================
+-- GIN: Array containment (locc_codes)
+-- ============================================================================
+CREATE INDEX idx_mv_gin_locc ON mv_books_dc USING GIN (locc_codes);
 
 -- ============================================================================
 -- GIN: Full-text search (tsvector)
 -- ============================================================================
-CREATE INDEX idx_mv_dc_tsvec ON mv_books_dc USING GIN (tsvec);
-CREATE INDEX idx_mv_dc_title_tsvec ON mv_books_dc USING GIN (title_tsvec);
-CREATE INDEX idx_mv_dc_subtitle_tsvec ON mv_books_dc USING GIN (subtitle_tsvec);
-CREATE INDEX idx_mv_dc_author_tsvec ON mv_books_dc USING GIN (author_tsvec);
-CREATE INDEX idx_mv_dc_subject_tsvec ON mv_books_dc USING GIN (subject_tsvec);
-CREATE INDEX idx_mv_dc_bookshelf_tsvec ON mv_books_dc USING GIN (bookshelf_tsvec);
-CREATE INDEX idx_mv_dc_attribute_tsvec ON mv_books_dc USING GIN (attribute_tsvec);
+CREATE INDEX idx_mv_fts_book ON mv_books_dc USING GIN (tsvec);
+CREATE INDEX idx_mv_fts_title ON mv_books_dc USING GIN (title_tsvec);
+CREATE INDEX idx_mv_fts_subtitle ON mv_books_dc USING GIN (subtitle_tsvec);
+CREATE INDEX idx_mv_fts_author ON mv_books_dc USING GIN (author_tsvec);
+CREATE INDEX idx_mv_fts_subject ON mv_books_dc USING GIN (subject_tsvec);
+CREATE INDEX idx_mv_fts_bookshelf ON mv_books_dc USING GIN (bookshelf_tsvec);
+CREATE INDEX idx_mv_fts_attribute ON mv_books_dc USING GIN (attribute_tsvec);
 
 -- ============================================================================
 -- GIN: Trigram ILIKE '%text%' (substring/contains search)
 -- ============================================================================
-CREATE INDEX idx_mv_dc_title_trgm ON mv_books_dc USING GIN (title gin_trgm_ops);
-CREATE INDEX idx_mv_dc_subtitle_trgm ON mv_books_dc USING GIN (subtitle gin_trgm_ops);
-CREATE INDEX idx_mv_dc_author_trgm ON mv_books_dc USING GIN (primary_author gin_trgm_ops);
-CREATE INDEX idx_mv_dc_subject_trgm ON mv_books_dc USING GIN (primary_subject gin_trgm_ops);
-CREATE INDEX idx_mv_dc_book_text_trgm ON mv_books_dc USING GIN (book_text gin_trgm_ops);
-CREATE INDEX idx_mv_dc_bookshelf_text_trgm ON mv_books_dc USING GIN (bookshelf_text gin_trgm_ops);
-CREATE INDEX idx_mv_dc_attribute_text_trgm ON mv_books_dc USING GIN (attribute_text gin_trgm_ops);
+CREATE INDEX idx_mv_contains_title ON mv_books_dc USING GIN (title gin_trgm_ops);
+CREATE INDEX idx_mv_contains_subtitle ON mv_books_dc USING GIN (subtitle gin_trgm_ops);
+CREATE INDEX idx_mv_contains_author ON mv_books_dc USING GIN (primary_author gin_trgm_ops);
+CREATE INDEX idx_mv_contains_subject ON mv_books_dc USING GIN (primary_subject gin_trgm_ops);
+CREATE INDEX idx_mv_contains_book ON mv_books_dc USING GIN (book_text gin_trgm_ops);
+CREATE INDEX idx_mv_contains_bookshelf ON mv_books_dc USING GIN (bookshelf_text gin_trgm_ops);
 
 -- ============================================================================
 -- GiST: Trigram <% (fuzzy/typo-tolerant word similarity)
 -- ============================================================================
-CREATE INDEX idx_mv_dc_title_trgm_gist ON mv_books_dc USING GIST (title gist_trgm_ops);
-CREATE INDEX idx_mv_dc_subtitle_trgm_gist ON mv_books_dc USING GIST (subtitle gist_trgm_ops);
-CREATE INDEX idx_mv_dc_author_trgm_gist ON mv_books_dc USING GIST (primary_author gist_trgm_ops);
-CREATE INDEX idx_mv_dc_subject_trgm_gist ON mv_books_dc USING GIST (primary_subject gist_trgm_ops);
-CREATE INDEX idx_mv_dc_book_text_trgm_gist ON mv_books_dc USING GIST (book_text gist_trgm_ops);
-CREATE INDEX idx_mv_dc_bookshelf_text_trgm_gist ON mv_books_dc USING GIST (bookshelf_text gist_trgm_ops);
-CREATE INDEX idx_mv_dc_attribute_text_trgm_gist ON mv_books_dc USING GIST (attribute_text gist_trgm_ops);
+CREATE INDEX idx_mv_fuzzy_title ON mv_books_dc USING GIST (title gist_trgm_ops);
+CREATE INDEX idx_mv_fuzzy_subtitle ON mv_books_dc USING GIST (subtitle gist_trgm_ops);
+CREATE INDEX idx_mv_fuzzy_author ON mv_books_dc USING GIST (primary_author gist_trgm_ops);
+CREATE INDEX idx_mv_fuzzy_subject ON mv_books_dc USING GIST (primary_subject gist_trgm_ops);
+CREATE INDEX idx_mv_fuzzy_book ON mv_books_dc USING GIST (book_text gist_trgm_ops);
+CREATE INDEX idx_mv_fuzzy_bookshelf ON mv_books_dc USING GIST (bookshelf_text gist_trgm_ops);
 
 -- ============================================================================
--- GIN: JSONB containment (@>)
+-- GIN: JSONB containment (@>) - ID lookups only
 -- ============================================================================
-CREATE INDEX idx_mv_dc_coverage ON mv_books_dc USING GIN ((dc->'coverage') jsonb_path_ops);
-CREATE INDEX idx_mv_dc_bookshelves ON mv_books_dc USING GIN ((dc->'bookshelves') jsonb_path_ops);
-CREATE INDEX idx_mv_dc_subjects ON mv_books_dc USING GIN ((dc->'subjects') jsonb_path_ops);
-CREATE INDEX idx_mv_dc_format ON mv_books_dc USING GIN ((dc->'format') jsonb_path_ops);
-CREATE INDEX idx_mv_dc_creators ON mv_books_dc USING GIN ((dc->'creators') jsonb_path_ops);
-
--- B-tree: date range filters
-CREATE INDEX idx_mv_dc_date ON mv_books_dc (text_to_date_immutable(dc->>'date'));
+CREATE INDEX idx_mv_jsonb_creators ON mv_books_dc USING GIN ((dc->'creators') jsonb_path_ops);
+CREATE INDEX idx_mv_jsonb_subjects ON mv_books_dc USING GIN ((dc->'subjects') jsonb_path_ops);
+CREATE INDEX idx_mv_jsonb_bookshelves ON mv_books_dc USING GIN ((dc->'bookshelves') jsonb_path_ops);
 
 ANALYZE mv_books_dc;
 

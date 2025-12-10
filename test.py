@@ -42,7 +42,7 @@ test("FTS SUBJECT", s.query().search("History", SearchField.SUBJECT)[1, 10])
 test("FTS BOOKSHELF", s.query().search("Science Fiction", SearchField.BOOKSHELF)[1, 10])
 test("FTS ATTRIBUTE", s.query().search("illustrated", SearchField.ATTRIBUTE)[1, 10])
 
-# === Search: FUZZY (all fields) ===
+# === Search: FUZZY (fields with trigram indexes) ===
 print("-" * 130)
 print("FUZZY Search (typo-tolerant, GiST trigram)")
 print("-" * 130)
@@ -52,9 +52,9 @@ test("FUZZY SUBTITLE", s.query().search("Volumee", SearchField.SUBTITLE, SearchT
 test("FUZZY AUTHOR", s.query().search("Twian", SearchField.AUTHOR, SearchType.FUZZY)[1, 10])
 test("FUZZY SUBJECT", s.query().search("Ficton", SearchField.SUBJECT, SearchType.FUZZY)[1, 10])
 test("FUZZY BOOKSHELF", s.query().search("Scince Ficton", SearchField.BOOKSHELF, SearchType.FUZZY)[1, 10])
-test("FUZZY ATTRIBUTE", s.query().search("ilustrated", SearchField.ATTRIBUTE, SearchType.FUZZY)[1, 10])
+# FUZZY ATTRIBUTE removed - no trigram index, falls back to FTS
 
-# === Search: CONTAINS (all fields) ===
+# === Search: CONTAINS (fields with trigram indexes) ===
 print("-" * 130)
 print("CONTAINS Search (substring, GIN trigram)")
 print("-" * 130)
@@ -64,7 +64,7 @@ test("CONTAINS SUBTITLE", s.query().search("Vol", SearchField.SUBTITLE, SearchTy
 test("CONTAINS AUTHOR", s.query().search("wain", SearchField.AUTHOR, SearchType.CONTAINS)[1, 10])
 test("CONTAINS SUBJECT", s.query().search("iction", SearchField.SUBJECT, SearchType.CONTAINS)[1, 10])
 test("CONTAINS BOOKSHELF", s.query().search("Fiction", SearchField.BOOKSHELF, SearchType.CONTAINS)[1, 10])
-test("CONTAINS ATTRIBUTE", s.query().search("biblical", SearchField.ATTRIBUTE, SearchType.CONTAINS)[1, 10])
+# CONTAINS ATTRIBUTE removed - no trigram index, falls back to FTS
 
 # === Filters: PK ===
 print("-" * 130)
@@ -84,8 +84,6 @@ test("copyrighted()", s.query().copyrighted()[1, 10])
 test("lang()", s.query().lang("de")[1, 10])
 test("text_only()", s.query().text_only()[1, 10])
 test("audiobook()", s.query().audiobook()[1, 10])
-test("has_files()", s.query().has_files()[1, 10])
-test("has_cover()", s.query().has_cover()[1, 10])
 test("author_born_after()", s.query().author_born_after(1900)[1, 10])
 test("author_born_before()", s.query().author_born_before(1700)[1, 10])
 
@@ -96,9 +94,9 @@ print("-" * 130)
 test("released_after()", s.query().released_after("2020-01-01")[1, 10])
 test("released_before()", s.query().released_before("2000-01-01")[1, 10])
 
-# === Filters: GIN JSONB ===
+# === Filters: GIN Array / JSONB ===
 print("-" * 130)
-print("Filters: GIN JSONB")
+print("Filters: GIN Array / JSONB")
 print("-" * 130)
 test("locc()", s.query().locc("PS")[1, 10])
 test("has_contributor()", s.query().has_contributor("Illustrator")[1, 10])
@@ -145,11 +143,11 @@ print("-" * 130)
 print("Combined Filters")
 print("-" * 130)
 test("FTS + lang + public_domain", s.query().search("Adventure").lang("en").public_domain()[1, 10])
-test("FTS + file_type + has_cover", s.query().search("Novel").file_type(FileType.EPUB).has_cover()[1, 10])
+test("FTS + file_type", s.query().search("Novel").file_type(FileType.EPUB)[1, 10])
 test("FUZZY TITLE + downloads_gte", s.query().search("Shakspeare", SearchField.TITLE, SearchType.FUZZY).downloads_gte(1000)[1, 10])
 test("author_id + file_type", s.query().author_id(53).file_type(FileType.TXT)[1, 10])
 test("FTS BOOKSHELF + lang", s.query().search("Mystery", SearchField.BOOKSHELF).lang("en")[1, 10])
-test("CONTAINS ATTRIBUTE + has_cover", s.query().search("copyright", SearchField.ATTRIBUTE, SearchType.CONTAINS).has_cover()[1, 10])
+test("locc + public_domain", s.query().locc("PS").public_domain()[1, 10])
 
 # === Crosswalk Formats ===
 print("-" * 130)

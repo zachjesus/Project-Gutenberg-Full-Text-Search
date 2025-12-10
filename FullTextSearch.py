@@ -90,6 +90,17 @@ _FIELD_COLS = {
     SearchField.ATTRIBUTE: ("attribute_tsvec", "attribute_text"),
 }
 
+# Fields that support fuzzy/contains (have trigram indexes)
+_TRIGRAM_FIELDS = {
+    SearchField.BOOK,
+    SearchField.TITLE,
+    SearchField.SUBTITLE,
+    SearchField.AUTHOR,
+    SearchField.SUBJECT,
+    SearchField.BOOKSHELF,
+    # ATTRIBUTE removed - no trigram index, too slow
+}
+
 _ORDER_SQL = {
     OrderBy.DOWNLOADS: "downloads DESC",
     OrderBy.TITLE: "title ASC",
@@ -101,9 +112,10 @@ _ORDER_SQL = {
 _SELECT = "book_id, title, primary_author, downloads, dc"
 
 _SUBQUERY = """book_id, title, primary_author, downloads, dc,
-    copyrighted, primary_lang, is_audio, has_files, has_cover,
+    copyrighted, primary_lang, is_audio,
     max_author_birthyear, min_author_birthyear,
     max_author_deathyear, min_author_deathyear,
+    locc_codes,
     tsvec, title_tsvec, subtitle_tsvec, author_tsvec, subject_tsvec, bookshelf_tsvec, attribute_tsvec,
     book_text, bookshelf_text, attribute_text, primary_subject, subtitle"""
 
@@ -200,9 +212,19 @@ class SearchQuery:
         if type == SearchType.FTS:
             self._search.append((f"{fts_col} @@ websearch_to_tsquery('english', :q)", {"q": txt}, fts_col))
         elif type == SearchType.FUZZY:
-            self._search.append((f":q <% {text_col}", {"q": txt}, text_col))
-        else:
-            self._search.append((f"{text_col} ILIKE :q", {"q": f"%{txt}%"}, text_col))
+            # Only allow fuzzy on fields with trigram indexes
+            if field not in _TRIGRAM_FIELDS:
+                # Fall back to FTS for fields without trigram support
+                self._search.append((f"{fts_col} @@ websearch_to_tsquery('english', :q)", {"q": txt}, fts_col))
+            else:
+                self._search.append((f":q <% {text_col}", {"q": txt}, text_col))
+        else:  # CONTAINS
+            # Only allow contains on fields with trigram indexes
+            if field not in _TRIGRAM_FIELDS:
+                # Fall back to FTS for fields without trigram support
+                self._search.append((f"{fts_col} @@ websearch_to_tsquery('english', :q)", {"q": txt}, fts_col))
+            else:
+                self._search.append((f"{text_col} ILIKE :q", {"q": f"%{txt}%"}, text_col))
         return self
     
     # === Filters ===
@@ -243,14 +265,6 @@ class SearchQuery:
         self._filter.append(("is_audio = true", {}))
         return self
     
-    def has_files(self) -> "SearchQuery":
-        self._filter.append(("has_files = true", {}))
-        return self
-    
-    def has_cover(self) -> "SearchQuery":
-        self._filter.append(("has_cover = true", {}))
-        return self
-    
     def author_born_after(self, year: int) -> "SearchQuery":
         self._filter.append(("max_author_birthyear >= :y", {"y": year}))
         return self
@@ -268,7 +282,7 @@ class SearchQuery:
         return self
     
     def locc(self, code: str) -> "SearchQuery":
-        self._filter.append(("dc->'coverage' @> CAST(:j AS jsonb)", {"j": f'[{{"id":"{code}"}}]'}))
+        self._filter.append((":code = ANY(locc_codes)", {"code": code}))
         return self
     
     def has_contributor(self, role: str) -> "SearchQuery":

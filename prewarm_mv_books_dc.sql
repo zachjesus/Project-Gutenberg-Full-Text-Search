@@ -42,13 +42,16 @@ END $$;
 SELECT COUNT(*) FROM mv_books_dc WHERE dc IS NOT NULL;
 
 -- ============================================================================
--- Touch GIN JSONB indexes
+-- Touch GIN JSONB indexes (ID lookups only)
 -- ============================================================================
-SELECT COUNT(*) FROM mv_books_dc WHERE dc->'format' @> '[{"encoding": "utf-8"}]'::jsonb;
 SELECT COUNT(*) FROM mv_books_dc WHERE dc->'creators' @> '[{"id": 1}]'::jsonb;
 SELECT COUNT(*) FROM mv_books_dc WHERE dc->'subjects' @> '[{"id": 1}]'::jsonb;
 SELECT COUNT(*) FROM mv_books_dc WHERE dc->'bookshelves' @> '[{"id": 1}]'::jsonb;
-SELECT COUNT(*) FROM mv_books_dc WHERE dc->'coverage' @> '[{"id": "PS"}]'::jsonb;
+
+-- ============================================================================
+-- Touch GIN array index (locc_codes)
+-- ============================================================================
+SELECT COUNT(*) FROM mv_books_dc WHERE 'PS' = ANY(locc_codes);
 
 -- ============================================================================
 -- Touch GIN tsvector indexes (FTS)
@@ -70,7 +73,6 @@ SELECT COUNT(*) FROM mv_books_dc WHERE primary_author ILIKE '%twain%';
 SELECT COUNT(*) FROM mv_books_dc WHERE primary_subject ILIKE '%fiction%';
 SELECT COUNT(*) FROM mv_books_dc WHERE book_text ILIKE '%shakespeare%';
 SELECT COUNT(*) FROM mv_books_dc WHERE bookshelf_text ILIKE '%science%';
-SELECT COUNT(*) FROM mv_books_dc WHERE attribute_text ILIKE '%illustrated%';
 
 -- ============================================================================
 -- Touch GiST trigram indexes (fuzzy/typo-tolerant)
@@ -81,7 +83,6 @@ SELECT COUNT(*) FROM mv_books_dc WHERE 'twian' <% primary_author;
 SELECT COUNT(*) FROM mv_books_dc WHERE 'ficton' <% primary_subject;
 SELECT COUNT(*) FROM mv_books_dc WHERE 'shakspere' <% book_text;
 SELECT COUNT(*) FROM mv_books_dc WHERE 'scince' <% bookshelf_text;
-SELECT COUNT(*) FROM mv_books_dc WHERE 'ilustrated' <% attribute_text;
 
 -- ============================================================================
 -- Touch B-tree indexes
@@ -90,8 +91,6 @@ SELECT COUNT(*) FROM mv_books_dc WHERE downloads > 1000;
 SELECT COUNT(*) FROM mv_books_dc WHERE copyrighted = 0;
 SELECT COUNT(*) FROM mv_books_dc WHERE primary_lang = 'en';
 SELECT COUNT(*) FROM mv_books_dc WHERE is_audio = true;
-SELECT COUNT(*) FROM mv_books_dc WHERE has_files = true;
-SELECT COUNT(*) FROM mv_books_dc WHERE has_cover = true;
 SELECT COUNT(*) FROM mv_books_dc WHERE max_author_birthyear > 1000;
 SELECT COUNT(*) FROM mv_books_dc WHERE min_author_birthyear < 2000;
 SELECT COUNT(*) FROM mv_books_dc WHERE max_author_deathyear > 1000;
