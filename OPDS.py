@@ -13,7 +13,7 @@ class API:
             "metadata": {"title": "Gutenberg OPDS"},
             "links": [
                 {"rel": "self", "href": "/opds", "type": "application/opds+json"},
-                {"rel": "search", "href": "/opds/search{?query,page,limit,field}", "type": "application/opds+json", "templated": True}
+                {"rel": "search", "href": "/opds/search{?query}", "type": "application/opds+json", "templated": True}
             ],
             "publications": []
         }
@@ -27,7 +27,6 @@ class API:
         except Exception:
             page, limit = 1, 10
 
-        # Map string field to SearchField enum
         field_map = {
             'book': SearchField.BOOK,
             'title': SearchField.TITLE,
@@ -38,14 +37,12 @@ class API:
         }
         search_field = field_map.get(field, SearchField.BOOK)
 
-        # Build and execute query using new API
         q = (self.fts.query(crosswalk=Crosswalk.OPDS)
              .search(query, field=search_field)
              [page, limit])
         
         result = self.fts.execute(q)
 
-        # Build OPDS 2.0 feed
         feed = {
             "metadata": {
                 "title": "Gutenberg Search Results",
@@ -63,7 +60,13 @@ class API:
             "publications": result["results"]
         }
 
-        # Add pagination links per OPDS 2.0 spec
+        feed["links"].append({
+            "rel": "search",
+            "href": "/opds/search{?query}",
+            "type": "application/opds+json",
+            "templated": True
+        })
+
         if result["page"] > 1:
             feed["links"].append({
                 "rel": "first",

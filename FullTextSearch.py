@@ -5,6 +5,8 @@ from typing import Any, Callable
 from enum import Enum
 from sqlalchemy import text, create_engine
 from sqlalchemy.orm import sessionmaker
+import mimetypes
+import html
 
 
 class Config:
@@ -90,7 +92,6 @@ _FIELD_COLS = {
     SearchField.ATTRIBUTE: ("attribute_tsvec", "attribute_text"),
 }
 
-# Fields that support fuzzy/contains (have trigram indexes)
 _TRIGRAM_FIELDS = {
     SearchField.BOOK,
     SearchField.TITLE,
@@ -145,35 +146,70 @@ def _crosswalk_pg(row) -> dict[str, Any]:
     }
 
 def _crosswalk_opds(row) -> dict[str, Any]:
-    """OPDS 2.0 crosswalk using Readium Web Publication Manifest context."""
+    """
+    Walks a book in the materialized view and produces an OPDS 2.0 compliant publication.
+    """
     dc = row.dc or {}
-    
-    # Primary creator with dates
+
+    def _abs_href(f: dict) -> str | None:
+        fn = f.get("filename") if f else None
+        if not fn:
+            return None
+        if fn.startswith(("http://", "https://")):
+            return fn
+        return f"https://www.gutenberg.org/{fn.lstrip('/')}"
+
+    FILETYPE_TO_MIME = {
+        "epub.images": "application/epub+zip",
+        "epub.noimages": "application/epub+zip",
+        "epub3.images": "application/epub+zip",
+        "kf8.images": "application/x-mobipocket-ebook",
+        "kindle.images": "application/x-mobipocket-ebook",
+        "kindle.noimages": "application/x-mobipocket-ebook",
+        "pdf": "application/pdf",
+        "mp3": "audio/mpeg",
+        "m4a": "audio/mp4",
+        "m4b": "audio/mp4",
+        "ogg": "audio/ogg",
+        "wav": "audio/x-wav",
+    }
+
+    ACCEPT_FILETYPES = {
+        "epub.images", "epub.noimages", "epub3.images",
+        "kf8.images", "kindle.images", "kindle.noimages",
+        "pdf", "mp3", "m4a", "m4b", "ogg", "wav"
+    }
+
+    def _mime_for(f: dict) -> str:
+        med = (f.get("mediatype")).strip()
+        if med:
+            return med
+        ft = (f.get("filetype")).strip().lower()
+        if ft and ft in FILETYPE_TO_MIME:
+            return FILETYPE_TO_MIME[ft]
+        guessed, _ = mimetypes.guess_type(f.get("filename"))
+        return guessed
+
     creators = dc.get("creators", [])
     primary = creators[0] if creators else {}
-    
-    # Author object - name includes dates for display, sortAs without
+
     author = None
     if primary.get("name"):
         name = primary["name"]
         if primary.get("birthdate") or primary.get("deathdate"):
             name = f"{name}, {primary.get('birthdate') or '?'}-{primary.get('deathdate') or ''}"
         author = {"name": name, "sortAs": primary["name"]}
-    
-    # Cover image URL
+
     cover = None
     for f in dc.get("format", []):
         ft = f.get("filetype") or ""
         if "cover.medium" in ft:
-            cover = f"https://www.gutenberg.org/{f['filename']}"
+            cover = _abs_href(f)
             break
         elif "cover" in ft and not cover:
-            cover = f"https://www.gutenberg.org/{f['filename']}"
-    
-    # Published date (PG release date)
+            cover = _abs_href(f)
+
     published = dc.get("date")
-    
-    # Modified date from marc 508 "Updated:"
     modified = None
     for m in dc.get("marc", []):
         if m.get("code") == 508:
@@ -181,30 +217,23 @@ def _crosswalk_opds(row) -> dict[str, Any]:
             if "Updated:" in txt:
                 modified = txt.split("Updated:")[1].strip().split()[0].rstrip(".")
                 break
-    
-    # Reading level from marc 908
+
     reading_level = None
     for m in dc.get("marc", []):
         if m.get("code") == 908:
             reading_level = m.get("text")
             break
-    
-    # Subjects (just subject headings, no LoCC)
-    subjects = [s["subject"] for s in dc.get("subjects", []) if s.get("subject")]
-    
-    # Bookshelves as collection objects
+
+    subjects = [s["subject"] for s in dc.get("subjects", []) if s.get("subject")] + [c["locc"] for c in dc.get("coverage", []) if c.get("locc")]
     bookshelves = [
         {"name": b["bookshelf"], "identifier": f"https://www.gutenberg.org/ebooks/bookshelf/{b.get('id', '')}"}
         for b in dc.get("bookshelves", []) if b.get("bookshelf")
     ]
-    
-    # LoCC as collection objects
     locc = [
         {"name": c["locc"], "identifier": f"https://www.gutenberg.org/ebooks/locc/{c.get('id', '')}"}
         for c in dc.get("coverage", []) if c.get("locc")
     ]
-    
-    # Build description with appended metadata
+
     desc_parts = []
     if summary := (dc.get("summary") or [None])[0]:
         desc_parts.append(summary)
@@ -219,17 +248,20 @@ def _crosswalk_opds(row) -> dict[str, Any]:
     if rights := dc.get("rights"):
         desc_parts.append(f"Rights: {rights}")
     desc_parts.append(f"Downloads: {row.downloads}")
-    
-    description = "\n\n".join(desc_parts) if desc_parts else None
-    
-    # Build metadata - no blank values per spec
+
+    if desc_parts:
+        parts = [html.escape(p) for p in desc_parts]
+        description_html = "<p>" + "</p><p>".join(parts) + "</p>"
+        description = description_html
+    else:
+        description = None
+
     metadata = {
         "@type": "http://schema.org/Book",
         "identifier": f"urn:gutenberg:{row.book_id}",
         "title": row.title,
         "language": (dc.get("language") or [{}])[0].get("code", "en"),
     }
-    
     if author:
         metadata["author"] = author
     if published:
@@ -242,21 +274,44 @@ def _crosswalk_opds(row) -> dict[str, Any]:
         metadata["subject"] = subjects
     if pub_raw := (dc.get("publisher") or {}).get("raw"):
         metadata["publisher"] = pub_raw
-    
-    # belongsTo for bookshelves AND LoCC as collections
+
     collections = bookshelves + locc
     if collections:
         metadata["belongsTo"] = {"collection": collections}
-    
-    # Links
+
     links = [{"rel": "self", "href": f"https://www.gutenberg.org/ebooks/{row.book_id}", "type": "text/html"}]
-    
-    # Images
-    images = [{"href": cover, "type": "image/jpeg"}] if cover else []
-    
+
+    for f in dc.get("format", []):
+        href = _abs_href(f)
+        if not href:
+            continue
+        ftype = (f.get("filetype") or "").strip().lower()
+        med = (f.get("mediatype") or "").strip().lower()
+        accept = False
+        if ftype in ACCEPT_FILETYPES:
+            accept = True
+        elif med.startswith("audio/"):
+            accept = True
+        elif med == "application/pdf":
+            accept = True
+        if not accept:
+            continue
+
+        mtype = _mime_for(f)
+        link = {"href": href, "type": mtype, "rel": "http://opds-spec.org/acquisition/open-access"}
+        if f.get("extent") is not None:
+            link["length"] = f.get("extent")
+        if f.get("encoding"):
+            link["encoding"] = f.get("encoding")
+        if f.get("hr_filetype"):
+            link["title"] = f.get("hr_filetype")
+        if ftype:
+            link["filetype"] = ftype
+        links.append(link)
+
     result = {"metadata": metadata, "links": links}
-    if images:
-        result["images"] = images
+    if cover:
+        result["images"] = [{"href": cover, "type": "image/jpeg"}]
     return result
 
 _CROSSWALK_MAP = {
@@ -264,9 +319,8 @@ _CROSSWALK_MAP = {
     Crosswalk.MINI: _crosswalk_mini,
     Crosswalk.PG: _crosswalk_pg, 
     Crosswalk.OPDS: _crosswalk_opds, 
-    Crosswalk.CUSTOM: _crosswalk_full  # Default fallback if no custom set
+    Crosswalk.CUSTOM: _crosswalk_full  
 }
-
 
 # =============================================================================
 # SearchQuery
@@ -276,7 +330,7 @@ _CROSSWALK_MAP = {
 class SearchQuery:
     """Query builder. Searches run in inner query, filters in outer."""
     
-    _search: list[tuple[str, dict, str]] = field(default_factory=list)  # (sql, params, rank_col)
+    _search: list[tuple[str, dict, str]] = field(default_factory=list)  
     _filter: list[tuple[str, dict]] = field(default_factory=list)
     _order: OrderBy = OrderBy.RELEVANCE
     _page: int = 1
@@ -322,16 +376,12 @@ class SearchQuery:
         if type == SearchType.FTS:
             self._search.append((f"{fts_col} @@ websearch_to_tsquery('english', :q)", {"q": txt}, fts_col))
         elif type == SearchType.FUZZY:
-            # Only allow fuzzy on fields with trigram indexes
             if field not in _TRIGRAM_FIELDS:
-                # Fall back to FTS for fields without trigram support
                 self._search.append((f"{fts_col} @@ websearch_to_tsquery('english', :q)", {"q": txt}, fts_col))
             else:
                 self._search.append((f":q <% {text_col}", {"q": txt}, text_col))
-        else:  # CONTAINS
-            # Only allow contains on fields with trigram indexes
+        else:  
             if field not in _TRIGRAM_FIELDS:
-                # Fall back to FTS for fields without trigram support
                 self._search.append((f"{fts_col} @@ websearch_to_tsquery('english', :q)", {"q": txt}, fts_col))
             else:
                 self._search.append((f"{text_col} ILIKE :q", {"q": f"%{txt}%"}, text_col))
