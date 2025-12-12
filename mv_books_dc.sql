@@ -496,12 +496,8 @@ CREATE INDEX idx_mv_jsonb_bookshelves ON mv_books_dc USING GIN ((dc->'bookshelve
 ANALYZE mv_books_dc;
 
 -- ============================================================================
--- Scheduled Daily Refresh (requires pg_cron extension)
+-- Refresh Function (for use with systemd timer or cron)
 -- ============================================================================
-
--- Create pg_cron extension (run as superuser, usually in postgres database)
--- Note: pg_cron must be in shared_preload_libraries in postgresql.conf
-CREATE EXTENSION IF NOT EXISTS pg_cron;
 
 CREATE OR REPLACE FUNCTION refresh_mv_books_dc()
 RETURNS void
@@ -517,19 +513,7 @@ BEGIN
 END;
 $$;
 
--- Schedule daily refresh at midnight (00:00)
--- Remove existing job if any, then create new one
-SELECT cron.unschedule('refresh-mv-books-dc') 
-WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'refresh-mv-books-dc');
-
-SELECT cron.schedule(
-    'refresh-mv-books-dc',           -- job name
-    '0 0 * * *',                     -- cron expression: midnight daily
-    'SELECT refresh_mv_books_dc()'   -- command to run
-);
-
--- To check scheduled jobs: SELECT * FROM cron.job;
--- To check job history: SELECT * FROM cron.job_run_details ORDER BY start_time DESC LIMIT 10;
 -- To manually refresh: SELECT refresh_mv_books_dc();
+-- For systemd timer, use: psql -U postgres -d your_database -c "SELECT refresh_mv_books_dc();"
 
 COMMIT;
