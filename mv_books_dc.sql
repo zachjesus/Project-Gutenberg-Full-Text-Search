@@ -3,9 +3,13 @@
 
 BEGIN;
 
-SET LOCAL work_mem = '8GB';
-SET LOCAL maintenance_work_mem = '10GB';
-SET LOCAL max_parallel_workers_per_gather = 8;
+-- Reasonable memory settings for MV build (adjust based on available RAM)
+-- work_mem: per-operation memory (sorts, hashes) - don't go too high
+-- maintenance_work_mem: for CREATE INDEX, VACUUM, etc.
+SET LOCAL work_mem = '256MB';
+SET LOCAL maintenance_work_mem = '1GB';
+SET LOCAL max_parallel_workers_per_gather = 4;
+SET LOCAL effective_io_concurrency = 200;  -- SSD optimization
 
 SET LOCAL client_min_messages = WARNING;
 
@@ -50,7 +54,8 @@ SELECT
         WHERE mbs.fk_books = b.pk
     ) AS all_subjects,
     
-    -- Combined searchable text: title + all authors + all subjects + all bookshelves + all attributes
+    -- Combined searchable text: title + all authors + all subjects + all bookshelves
+    -- (attributes excluded to reduce size for fuzzy search)
     CONCAT_WS(' ', 
         b.title,
         (SELECT STRING_AGG(au.author, ' ')
@@ -64,10 +69,7 @@ SELECT
         (SELECT STRING_AGG(bs.bookshelf, ' ')
          FROM mn_books_bookshelves mbbs
          JOIN bookshelves bs ON mbbs.fk_bookshelves = bs.pk
-         WHERE mbbs.fk_books = b.pk),
-        (SELECT STRING_AGG(REGEXP_REPLACE(a.text, '\$[a-z0-9]', ' ', 'gi'), ' ')
-         FROM attributes a
-         WHERE a.fk_books = b.pk)
+         WHERE mbbs.fk_books = b.pk)
     ) AS book_text,
     
     COALESCE((
@@ -492,5 +494,42 @@ CREATE INDEX idx_mv_jsonb_subjects ON mv_books_dc USING GIN ((dc->'subjects') js
 CREATE INDEX idx_mv_jsonb_bookshelves ON mv_books_dc USING GIN ((dc->'bookshelves') jsonb_path_ops);
 
 ANALYZE mv_books_dc;
+
+-- ============================================================================
+-- Scheduled Daily Refresh (requires pg_cron extension)
+-- ============================================================================
+
+-- Create pg_cron extension (run as superuser, usually in postgres database)
+-- Note: pg_cron must be in shared_preload_libraries in postgresql.conf
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+CREATE OR REPLACE FUNCTION refresh_mv_books_dc()
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    -- Set memory for this session's refresh operation
+    SET LOCAL work_mem = '256MB';
+    SET LOCAL maintenance_work_mem = '1GB';
+    
+    REFRESH MATERIALIZED VIEW CONCURRENTLY mv_books_dc;
+    ANALYZE mv_books_dc;
+END;
+$$;
+
+-- Schedule daily refresh at midnight (00:00)
+-- Remove existing job if any, then create new one
+SELECT cron.unschedule('refresh-mv-books-dc') 
+WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'refresh-mv-books-dc');
+
+SELECT cron.schedule(
+    'refresh-mv-books-dc',           -- job name
+    '0 0 * * *',                     -- cron expression: midnight daily
+    'SELECT refresh_mv_books_dc()'   -- command to run
+);
+
+-- To check scheduled jobs: SELECT * FROM cron.job;
+-- To check job history: SELECT * FROM cron.job_run_details ORDER BY start_time DESC LIMIT 10;
+-- To manually refresh: SELECT refresh_mv_books_dc();
 
 COMMIT;
