@@ -134,9 +134,13 @@ q.search("venture", SearchField.TITLE, SearchType.CONTAINS)
 
 ### Filter Methods
 
-Built-in filters with index support:
+Built-in filters with index support.
+
+`LanguageCode` and `LoccClass` mirror the OPDS facet options; human-readable labels are available via `LANGUAGE_LIST` and `LOCC_LIST`.
 
 ```python
+from FullTextSearch import LanguageCode, LoccClass, FileType, Encoding
+
 # By ID
 q.etext(1342)                    # Single book
 q.etexts([1342, 84, 11])         # Multiple books
@@ -150,8 +154,8 @@ q.public_domain()                # copyrighted = 0
 q.copyrighted()                  # copyrighted = 1
 
 # By language (matches any language in multi-language books)
-q.lang("en")                     # English
-q.lang("de")                     # German
+q.lang(LanguageCode.EN)          # English
+q.lang(LanguageCode.DE)          # German
 
 # By format
 q.text_only()                    # Exclude audiobooks
@@ -168,10 +172,10 @@ q.released_after("2020-01-01")
 q.released_before("2000-01-01")
 
 # By classification
-q.locc("PS")                     # LoCC code prefix match
+q.locc(LoccClass.P)              # LoCC top-level class (prefix match)
+q.locc("PS")                     # Optional: narrower LoCC prefix match
 
 # By file type
-from FullTextSearch import FileType, Encoding
 q.file_type(FileType.EPUB)
 q.file_type(FileType.PDF)
 q.encoding(Encoding.UTF8)
@@ -191,10 +195,12 @@ q.where("jsonb_array_length(dc->'creators') > :n", n=2)
 All methods return `self` for chaining:
 
 ```python
+from FullTextSearch import SearchField, OrderBy, LanguageCode
+
 result = fts.execute(
     fts.query()
     .search("Adventure", SearchField.TITLE)
-    .lang("en")
+    .lang(LanguageCode.EN)
     .public_domain()
     .downloads_gte(100)
     .order_by(OrderBy.DOWNLOADS)
@@ -321,7 +327,8 @@ flowchart TB
         TP[Thread Pool]
     end
 
-    subgraph Stateless["FullTextSearch"]
+    subgraph Stateless["FullTextSearch (stateless)"]
+        FTS[FullTextSearch]
         ENGINE[SQLAlchemy Engine]
         FACTORY[Session Factory]
     end
@@ -338,19 +345,29 @@ flowchart TB
     end
 
     subgraph DB["PostgreSQL"]
-        PROC[Materilized View]
+        MV[Materialized View]
         SB[Shared Buffers]
     end
 
-    TP --> ENGINE
-    ENGINE --> FACTORY
-    FACTORY -->|".query()"| SQ
-    SQ -->|".execute()"| SESS
+    TP --> FTS
+    FTS -->|"create_engine()"| ENGINE
+    ENGINE -->|"bind"| FACTORY
+    FTS -->|".query()"| SQ
+    SQ -->|".search().lang()[1,25]"| SQ
+    FTS -->|".execute(q)"| FACTORY
+    FACTORY -->|"with Session()"| SESS
     SESS -->|"checkout"| Pool
     Pool --> DB 
 ```
 
-- FullTextSearch is thread-safe (stateless, holds only engine/factory)
-- Each request gets its own SearchQuery and Session
+**Typical usage:**
+```python
+fts = FullTextSearch()                          # Creates engine + session factory
+q = fts.query().search("Shakespeare")[1, 25]    # Builds SearchQuery (no DB hit)
+result = fts.execute(q)                         # Session checks out connection, runs query
+```
+
+- `FullTextSearch` is thread-safe (stateless, holds only engine/factory)
+- Each `.execute()` call gets its own Session (connection checkout/return)
+- `SearchQuery` is just a builder—no DB access until `.execute()`
 - Connection pool handles concurrent database access
-- PostgreSQL handles parallel query execution

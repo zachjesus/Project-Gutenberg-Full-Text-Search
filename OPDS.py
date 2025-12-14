@@ -1,121 +1,24 @@
 """OPDS 2.0 API for Gutenberg catalog."""
 import cherrypy
-from FullTextSearch import FullTextSearch, SearchField, SearchType, OrderBy, SortDirection, Crosswalk
+from FullTextSearch import (
+    FullTextSearch, SearchField, SearchType, OrderBy, SortDirection, Crosswalk,
+    LANGUAGE_LIST, LOCC_LIST
+)
+
+# Valid sort values (subset of OrderBy enum, excludes RELEVANCE which is default)
+_VALID_SORTS = {OrderBy.DOWNLOADS.value, OrderBy.TITLE.value, OrderBy.AUTHOR.value, 
+                OrderBy.RELEASE_DATE.value, OrderBy.RANDOM.value}
 
 
-LANGUAGE_LIST = [
-    {'code': 'en', 'label': 'English'},
-    {'code': 'af', 'label': 'Afrikaans'},
-    {'code': 'ale', 'label': 'Aleut'},
-    {'code': 'ang', 'label': 'Old English'},
-    {'code': 'ar', 'label': 'Arabic'},
-    {'code': 'arp', 'label': 'Arapaho'},
-    {'code': 'bg', 'label': 'Bulgarian'},
-    {'code': 'bgs', 'label': 'Basa Banyumasan'},
-    {'code': 'bo', 'label': 'Tibetan'},
-    {'code': 'br', 'label': 'Breton'},
-    {'code': 'brx', 'label': 'Bodo'},
-    {'code': 'ca', 'label': 'Catalan'},
-    {'code': 'ceb', 'label': 'Cebuano'},
-    {'code': 'cs', 'label': 'Czech'},
-    {'code': 'csb', 'label': 'Kashubian'},
-    {'code': 'cy', 'label': 'Welsh'},
-    {'code': 'da', 'label': 'Danish'},
-    {'code': 'de', 'label': 'German'},
-    {'code': 'el', 'label': 'Greek'},
-    {'code': 'enm', 'label': 'Middle English'},
-    {'code': 'eo', 'label': 'Esperanto'},
-    {'code': 'es', 'label': 'Spanish'},
-    {'code': 'et', 'label': 'Estonian'},
-    {'code': 'fa', 'label': 'Persian'},
-    {'code': 'fi', 'label': 'Finnish'},
-    {'code': 'fr', 'label': 'French'},
-    {'code': 'fur', 'label': 'Friulian'},
-    {'code': 'fy', 'label': 'Western Frisian'},
-    {'code': 'ga', 'label': 'Irish'},
-    {'code': 'gl', 'label': 'Galician'},
-    {'code': 'gla', 'label': 'Scottish Gaelic'},
-    {'code': 'grc', 'label': 'Ancient Greek'},
-    {'code': 'hai', 'label': 'Haida'},
-    {'code': 'he', 'label': 'Hebrew'},
-    {'code': 'hu', 'label': 'Hungarian'},
-    {'code': 'ia', 'label': 'Interlingua'},
-    {'code': 'ilo', 'label': 'Iloko'},
-    {'code': 'is', 'label': 'Icelandic'},
-    {'code': 'it', 'label': 'Italian'},
-    {'code': 'iu', 'label': 'Inuktitut'},
-    {'code': 'ja', 'label': 'Japanese'},
-    {'code': 'kha', 'label': 'Khasi'},
-    {'code': 'kld', 'label': 'Klamath-Modoc'},
-    {'code': 'ko', 'label': 'Korean'},
-    {'code': 'la', 'label': 'Latin'},
-    {'code': 'lt', 'label': 'Lithuanian'},
-    {'code': 'mi', 'label': 'Māori'},
-    {'code': 'myn', 'label': 'Mayan Languages'},
-    {'code': 'nah', 'label': 'Nahuatl'},
-    {'code': 'nai', 'label': 'North American Indian'},
-    {'code': 'nap', 'label': 'Neapolitan'},
-    {'code': 'nav', 'label': 'Navajo'},
-    {'code': 'nl', 'label': 'Dutch'},
-    {'code': 'no', 'label': 'Norwegian'},
-    {'code': 'oc', 'label': 'Occitan'},
-    {'code': 'oji', 'label': 'Ojibwa'},
-    {'code': 'pl', 'label': 'Polish'},
-    {'code': 'pt', 'label': 'Portuguese'},
-    {'code': 'rmq', 'label': 'Romani'},
-    {'code': 'ro', 'label': 'Romanian'},
-    {'code': 'ru', 'label': 'Russian'},
-    {'code': 'sa', 'label': 'Sanskrit'},
-    {'code': 'sco', 'label': 'Scots'},
-    {'code': 'sl', 'label': 'Slovenian'},
-    {'code': 'sr', 'label': 'Serbian'},
-    {'code': 'sv', 'label': 'Swedish'},
-    {'code': 'te', 'label': 'Telugu'},
-    {'code': 'tl', 'label': 'Tagalog'},
-    {'code': 'yi', 'label': 'Yiddish'},
-    {'code': 'zh', 'label': 'Chinese'},
-]
-
-LOCC_LIST = [
-    {'code': 'A', 'label': 'General Works'},
-    {'code': 'B', 'label': 'Philosophy, Psychology, Religion'},
-    {'code': 'C', 'label': 'History: Auxiliary Sciences'},
-    {'code': 'D', 'label': 'History: General and Eastern Hemisphere'},
-    {'code': 'E', 'label': 'History: America'},
-    {'code': 'F', 'label': 'History: America (Local)'},
-    {'code': 'G', 'label': 'Geography, Anthropology, Recreation'},
-    {'code': 'H', 'label': 'Social Sciences'},
-    {'code': 'J', 'label': 'Political Science'},
-    {'code': 'K', 'label': 'Law'},
-    {'code': 'L', 'label': 'Education'},
-    {'code': 'M', 'label': 'Music'},
-    {'code': 'N', 'label': 'Fine Arts'},
-    {'code': 'P', 'label': 'Language and Literature'},
-    {'code': 'Q', 'label': 'Science'},
-    {'code': 'R', 'label': 'Medicine'},
-    {'code': 'S', 'label': 'Agriculture'},
-    {'code': 'T', 'label': 'Technology'},
-    {'code': 'U', 'label': 'Military Science'},
-    {'code': 'V', 'label': 'Naval Science'},
-    {'code': 'Z', 'label': 'Bibliography, Library Science'},
-]
-
-FIELD_MAP = {
-    "keyword": (SearchField.BOOK, SearchType.FTS),
-    "title": (SearchField.TITLE, SearchType.FTS),
-    "author": (SearchField.AUTHOR, SearchType.FTS),
-    "fuzzy_keyword": (SearchField.BOOK, SearchType.FUZZY),
-    "fuzzy_title": (SearchField.TITLE, SearchType.FUZZY),
-    "fuzzy_author": (SearchField.AUTHOR, SearchType.FUZZY),
-}
-
-SORT_MAP = {
-    "downloads": OrderBy.DOWNLOADS,
-    "title": OrderBy.TITLE,
-    "author": OrderBy.AUTHOR,
-    "release_date": OrderBy.RELEASE_DATE,
-    "random": OrderBy.RANDOM,
-}
+def _parse_field(field: str) -> tuple[SearchField, SearchType]:
+    """Parse field param to (SearchField, SearchType). Supports 'fuzzy_' prefix."""
+    search_type = SearchType.FUZZY if field.startswith("fuzzy_") else SearchType.FTS
+    field_name = field[6:] if field.startswith("fuzzy_") else field
+    field_name = "book" if field_name == "keyword" else field_name
+    
+    if field_name not in {f.value for f in SearchField}:
+        return SearchField.BOOK, SearchType.FTS
+    return SearchField(field_name), search_type
 
 
 def _facet_link(href: str, title: str, is_active: bool) -> dict:
@@ -218,7 +121,7 @@ class API:
         except (ValueError, TypeError):
             page, limit = 1, 20
 
-        search_field, search_type = FIELD_MAP.get(field, (SearchField.BOOK, SearchType.FTS))
+        search_field, search_type = _parse_field(field)
         
         try:
             q = self.fts.query(crosswalk=Crosswalk.OPDS)
@@ -226,9 +129,9 @@ class API:
             if query.strip():
                 q.search(query, field=search_field, type=search_type)
             
-            if sort in SORT_MAP:
+            if sort in _VALID_SORTS:
                 direction = SortDirection.ASC if sort_order == "asc" else SortDirection.DESC if sort_order == "desc" else None
-                q.order_by(SORT_MAP[sort], direction)
+                q.order_by(OrderBy(sort), direction)
             elif query.strip():
                 q.order_by(OrderBy.RELEVANCE)
             else:

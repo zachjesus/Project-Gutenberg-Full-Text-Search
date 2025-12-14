@@ -1,7 +1,7 @@
 """Test all FullTextSearch methods."""
 from FullTextSearch import (
     FullTextSearch, SearchField, SearchType, FileType, Encoding,
-    OrderBy, Crosswalk
+    OrderBy, Crosswalk, LanguageCode, LoccClass
 )
 import time
 
@@ -97,8 +97,8 @@ test("released_before()", s.query().released_before("2000-01-01")[1, 10])
 print("-" * 130)
 print("Filters: GIN Array / JSONB")
 print("-" * 130)
-test("lang()", s.query().lang("de")[1, 10])
-test("locc()", s.query().locc("PS")[1, 10])
+test("lang()", s.query().lang(LanguageCode.DE)[1, 10])
+test("locc()", s.query().locc(LoccClass.P)[1, 10])
 test("has_contributor()", s.query().has_contributor("Illustrator")[1, 10])
 test("file_type() EPUB", s.query().file_type(FileType.EPUB)[1, 10])
 test("file_type() PDF", s.query().file_type(FileType.PDF)[1, 10])
@@ -142,12 +142,12 @@ test("order_by(RANDOM)", s.query().search("Novel").order_by(OrderBy.RANDOM)[1, 1
 print("-" * 130)
 print("Combined Filters")
 print("-" * 130)
-test("FTS + lang + public_domain", s.query().search("Adventure").lang("en").public_domain()[1, 10])
+test("FTS + lang + public_domain", s.query().search("Adventure").lang(LanguageCode.EN).public_domain()[1, 10])
 test("FTS + file_type", s.query().search("Novel").file_type(FileType.EPUB)[1, 10])
 test("FUZZY TITLE + downloads_gte", s.query().search("Shakspeare", SearchField.TITLE, SearchType.FUZZY).downloads_gte(1000)[1, 10])
 test("author_id + file_type", s.query().author_id(53).file_type(FileType.TXT)[1, 10])
-test("FTS BOOKSHELF + lang", s.query().search("Mystery", SearchField.BOOKSHELF).lang("en")[1, 10])
-test("locc + public_domain", s.query().locc("PS").public_domain()[1, 10])
+test("FTS BOOKSHELF + lang", s.query().search("Mystery", SearchField.BOOKSHELF).lang(LanguageCode.EN)[1, 10])
+test("locc + public_domain", s.query().locc(LoccClass.P).public_domain()[1, 10])
 
 # === Crosswalk Formats ===
 print("-" * 130)
@@ -237,7 +237,7 @@ print(f"{'Crosswalk.CUSTOM':<50} | {data['total']:>6} | {ms:>7.1f}ms | {first}")
 print("-" * 130)
 print("Dunder Methods")
 print("-" * 130)
-q = s.query().search("Shakespeare").lang("en")
+q = s.query().search("Shakespeare").lang(LanguageCode.EN)
 print(f"len(q) = {len(q)} (1 search + 1 filter)")
 print(f"bool(q) = {bool(q)}")
 print(f"bool(s.query()) = {bool(s.query())} (empty query)")

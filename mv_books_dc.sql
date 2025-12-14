@@ -74,7 +74,7 @@ SELECT
     
     -- All language codes as array for multi-language filtering
     COALESCE((
-        SELECT ARRAY_AGG(l.pk)
+        SELECT ARRAY_AGG(DISTINCT l.pk::text)
         FROM mn_books_langs mbl
         JOIN langs l ON mbl.fk_langs = l.pk
         WHERE mbl.fk_books = b.pk

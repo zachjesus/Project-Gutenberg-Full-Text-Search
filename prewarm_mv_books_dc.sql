@@ -89,7 +89,7 @@ SELECT COUNT(*) FROM mv_books_dc WHERE 'scince' <% bookshelf_text;
 -- ============================================================================
 SELECT COUNT(*) FROM mv_books_dc WHERE downloads > 1000;
 SELECT COUNT(*) FROM mv_books_dc WHERE copyrighted = 0;
-SELECT COUNT(*) FROM mv_books_dc WHERE 'en' = ANY(lang_codes);
+SELECT COUNT(*) FROM mv_books_dc WHERE lang_codes @> ARRAY['en'];
 SELECT COUNT(*) FROM mv_books_dc WHERE is_audio = true;
 SELECT COUNT(*) FROM mv_books_dc WHERE max_author_birthyear > 1000;
 SELECT COUNT(*) FROM mv_books_dc WHERE min_author_birthyear < 2000;

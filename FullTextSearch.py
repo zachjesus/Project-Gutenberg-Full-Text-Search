@@ -9,6 +9,26 @@ import mimetypes
 import html
 
 
+__all__ = [
+    "Config",
+    "FullTextSearch",
+    "SearchQuery",
+    "SearchField",
+    "SearchType",
+    "OrderBy",
+    "SortDirection",
+    "FileType",
+    "Encoding",
+    "Crosswalk",
+    "LanguageCode",
+    "LoccClass",
+    "LANGUAGE_LIST",
+    "LOCC_LIST",
+    "LANGUAGE_LABELS",
+    "LOCC_LABELS",
+]
+
+
 class Config:
     PGHOST = 'localhost'
     PGPORT = '5432'
@@ -17,8 +37,212 @@ class Config:
 
 
 # =============================================================================
+# Catalog vocabulary (OPDS facet labels)
+# =============================================================================
+
+LANGUAGE_LIST = [
+    {'code': 'en', 'label': 'English'},
+    {'code': 'af', 'label': 'Afrikaans'},
+    {'code': 'ale', 'label': 'Aleut'},
+    {'code': 'ang', 'label': 'Old English'},
+    {'code': 'ar', 'label': 'Arabic'},
+    {'code': 'arp', 'label': 'Arapaho'},
+    {'code': 'bg', 'label': 'Bulgarian'},
+    {'code': 'bgs', 'label': 'Basa Banyumasan'},
+    {'code': 'bo', 'label': 'Tibetan'},
+    {'code': 'br', 'label': 'Breton'},
+    {'code': 'brx', 'label': 'Bodo'},
+    {'code': 'ca', 'label': 'Catalan'},
+    {'code': 'ceb', 'label': 'Cebuano'},
+    {'code': 'cs', 'label': 'Czech'},
+    {'code': 'csb', 'label': 'Kashubian'},
+    {'code': 'cy', 'label': 'Welsh'},
+    {'code': 'da', 'label': 'Danish'},
+    {'code': 'de', 'label': 'German'},
+    {'code': 'el', 'label': 'Greek'},
+    {'code': 'enm', 'label': 'Middle English'},
+    {'code': 'eo', 'label': 'Esperanto'},
+    {'code': 'es', 'label': 'Spanish'},
+    {'code': 'et', 'label': 'Estonian'},
+    {'code': 'fa', 'label': 'Persian'},
+    {'code': 'fi', 'label': 'Finnish'},
+    {'code': 'fr', 'label': 'French'},
+    {'code': 'fur', 'label': 'Friulian'},
+    {'code': 'fy', 'label': 'Western Frisian'},
+    {'code': 'ga', 'label': 'Irish'},
+    {'code': 'gl', 'label': 'Galician'},
+    {'code': 'gla', 'label': 'Scottish Gaelic'},
+    {'code': 'grc', 'label': 'Ancient Greek'},
+    {'code': 'hai', 'label': 'Haida'},
+    {'code': 'he', 'label': 'Hebrew'},
+    {'code': 'hu', 'label': 'Hungarian'},
+    {'code': 'ia', 'label': 'Interlingua'},
+    {'code': 'ilo', 'label': 'Iloko'},
+    {'code': 'is', 'label': 'Icelandic'},
+    {'code': 'it', 'label': 'Italian'},
+    {'code': 'iu', 'label': 'Inuktitut'},
+    {'code': 'ja', 'label': 'Japanese'},
+    {'code': 'kha', 'label': 'Khasi'},
+    {'code': 'kld', 'label': 'Klamath-Modoc'},
+    {'code': 'ko', 'label': 'Korean'},
+    {'code': 'la', 'label': 'Latin'},
+    {'code': 'lt', 'label': 'Lithuanian'},
+    {'code': 'mi', 'label': 'Māori'},
+    {'code': 'myn', 'label': 'Mayan Languages'},
+    {'code': 'nah', 'label': 'Nahuatl'},
+    {'code': 'nai', 'label': 'North American Indian'},
+    {'code': 'nap', 'label': 'Neapolitan'},
+    {'code': 'nav', 'label': 'Navajo'},
+    {'code': 'nl', 'label': 'Dutch'},
+    {'code': 'no', 'label': 'Norwegian'},
+    {'code': 'oc', 'label': 'Occitan'},
+    {'code': 'oji', 'label': 'Ojibwa'},
+    {'code': 'pl', 'label': 'Polish'},
+    {'code': 'pt', 'label': 'Portuguese'},
+    {'code': 'rmq', 'label': 'Romani'},
+    {'code': 'ro', 'label': 'Romanian'},
+    {'code': 'ru', 'label': 'Russian'},
+    {'code': 'sa', 'label': 'Sanskrit'},
+    {'code': 'sco', 'label': 'Scots'},
+    {'code': 'sl', 'label': 'Slovenian'},
+    {'code': 'sr', 'label': 'Serbian'},
+    {'code': 'sv', 'label': 'Swedish'},
+    {'code': 'te', 'label': 'Telugu'},
+    {'code': 'tl', 'label': 'Tagalog'},
+    {'code': 'yi', 'label': 'Yiddish'},
+    {'code': 'zh', 'label': 'Chinese'},
+]
+
+LOCC_LIST = [
+    {'code': 'A', 'label': 'General Works'},
+    {'code': 'B', 'label': 'Philosophy, Psychology, Religion'},
+    {'code': 'C', 'label': 'History: Auxiliary Sciences'},
+    {'code': 'D', 'label': 'History: General and Eastern Hemisphere'},
+    {'code': 'E', 'label': 'History: America'},
+    {'code': 'F', 'label': 'History: America (Local)'},
+    {'code': 'G', 'label': 'Geography, Anthropology, Recreation'},
+    {'code': 'H', 'label': 'Social Sciences'},
+    {'code': 'J', 'label': 'Political Science'},
+    {'code': 'K', 'label': 'Law'},
+    {'code': 'L', 'label': 'Education'},
+    {'code': 'M', 'label': 'Music'},
+    {'code': 'N', 'label': 'Fine Arts'},
+    {'code': 'P', 'label': 'Language and Literature'},
+    {'code': 'Q', 'label': 'Science'},
+    {'code': 'R', 'label': 'Medicine'},
+    {'code': 'S', 'label': 'Agriculture'},
+    {'code': 'T', 'label': 'Technology'},
+    {'code': 'U', 'label': 'Military Science'},
+    {'code': 'V', 'label': 'Naval Science'},
+    {'code': 'Z', 'label': 'Bibliography, Library Science'},
+]
+
+LANGUAGE_LABELS = {i["code"]: i["label"] for i in LANGUAGE_LIST}
+LOCC_LABELS = {i["code"]: i["label"] for i in LOCC_LIST}
+
+
+# =============================================================================
 # Enums
 # =============================================================================
+
+class LanguageCode(str, Enum):
+    """Common language codes (mirrors OPDS facet options)."""
+    EN = "en"
+    AF = "af"
+    ALE = "ale"
+    ANG = "ang"
+    AR = "ar"
+    ARP = "arp"
+    BG = "bg"
+    BGS = "bgs"
+    BO = "bo"
+    BR = "br"
+    BRX = "brx"
+    CA = "ca"
+    CEB = "ceb"
+    CS = "cs"
+    CSB = "csb"
+    CY = "cy"
+    DA = "da"
+    DE = "de"
+    EL = "el"
+    ENM = "enm"
+    EO = "eo"
+    ES = "es"
+    ET = "et"
+    FA = "fa"
+    FI = "fi"
+    FR = "fr"
+    FUR = "fur"
+    FY = "fy"
+    GA = "ga"
+    GL = "gl"
+    GLA = "gla"
+    GRC = "grc"
+    HAI = "hai"
+    HE = "he"
+    HU = "hu"
+    IA = "ia"
+    ILO = "ilo"
+    IS = "is"
+    IT = "it"
+    IU = "iu"
+    JA = "ja"
+    KHA = "kha"
+    KLD = "kld"
+    KO = "ko"
+    LA = "la"
+    LT = "lt"
+    MI = "mi"
+    MYN = "myn"
+    NAH = "nah"
+    NAI = "nai"
+    NAP = "nap"
+    NAV = "nav"
+    NL = "nl"
+    NO = "no"
+    OC = "oc"
+    OJI = "oji"
+    PL = "pl"
+    PT = "pt"
+    RMQ = "rmq"
+    RO = "ro"
+    RU = "ru"
+    SA = "sa"
+    SCO = "sco"
+    SL = "sl"
+    SR = "sr"
+    SV = "sv"
+    TE = "te"
+    TL = "tl"
+    YI = "yi"
+    ZH = "zh"
+
+
+class LoccClass(str, Enum):
+    """Library of Congress Classification top-level classes (mirrors OPDS facet options)."""
+    A = "A"
+    B = "B"
+    C = "C"
+    D = "D"
+    E = "E"
+    F = "F"
+    G = "G"
+    H = "H"
+    J = "J"
+    K = "K"
+    L = "L"
+    M = "M"
+    N = "N"
+    P = "P"
+    Q = "Q"
+    R = "R"
+    S = "S"
+    T = "T"
+    U = "U"
+    V = "V"
+    Z = "Z"
+
 
 class FileType(str, Enum):
     """MIME types for file filtering."""
@@ -388,9 +612,11 @@ class SearchQuery:
         self._filter.append(("copyrighted = 1", {}))
         return self
     
-    def lang(self, code: str) -> SearchQuery:
+    def lang(self, code: str | LanguageCode) -> SearchQuery:
         """Filter by language code (matches any language in multi-language books)."""
-        self._filter.append((":lang = ANY(lang_codes)", {"lang": str(code)}))
+        code_val = code.value if isinstance(code, Enum) else str(code)
+        # Use array containment to leverage the GIN index on lang_codes.
+        self._filter.append(("lang_codes @> ARRAY[CAST(:lang AS text)]", {"lang": code_val}))
         return self
     
     def text_only(self) -> SearchQuery:
@@ -425,11 +651,12 @@ class SearchQuery:
         self._filter.append(("text_to_date_immutable(dc->>'date') <= CAST(:d AS date)", {"d": str(date)}))
         return self
     
-    def locc(self, code: str) -> SearchQuery:
+    def locc(self, code: str | LoccClass) -> SearchQuery:
         """Filter by LoCC code (prefix match for top-level codes like 'E', 'F')."""
+        code_val = code.value if isinstance(code, Enum) else str(code)
         self._filter.append((
             "EXISTS (SELECT 1 FROM unnest(locc_codes) AS lc WHERE lc LIKE :locc_pattern)",
-            {"locc_pattern": f"{code}%"}
+            {"locc_pattern": f"{code_val}%"}
         ))
         return self
     
