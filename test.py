@@ -81,7 +81,6 @@ test("downloads_gte()", s.query().downloads_gte(10000)[1, 10])
 test("downloads_lte()", s.query().downloads_lte(100)[1, 10])
 test("public_domain()", s.query().public_domain()[1, 10])
 test("copyrighted()", s.query().copyrighted()[1, 10])
-test("lang()", s.query().lang("de")[1, 10])
 test("text_only()", s.query().text_only()[1, 10])
 test("audiobook()", s.query().audiobook()[1, 10])
 test("author_born_after()", s.query().author_born_after(1900)[1, 10])
@@ -98,11 +97,12 @@ test("released_before()", s.query().released_before("2000-01-01")[1, 10])
 print("-" * 130)
 print("Filters: GIN Array / JSONB")
 print("-" * 130)
+test("lang()", s.query().lang("de")[1, 10])
 test("locc()", s.query().locc("PS")[1, 10])
 test("has_contributor()", s.query().has_contributor("Illustrator")[1, 10])
 test("file_type() EPUB", s.query().file_type(FileType.EPUB)[1, 10])
 test("file_type() PDF", s.query().file_type(FileType.PDF)[1, 10])
-test("file_type() MP3", s.query().file_type(FileType.MP3)[1, 10])
+test("file_type() TXT", s.query().file_type(FileType.TXT)[1, 10])
 test("file_type() KINDLE", s.query().search("Computers").file_type(FileType.KINDLE)[1, 10])
 test("author_id()", s.query().author_id(53)[1, 10])
 test("subject_id()", s.query().subject_id(1)[1, 10])
@@ -171,10 +171,10 @@ if first:
     print(f"  -> ebook_no: {first.get('ebook_no')}, files: {len(first.get('files', []))}, contributors: {len(first.get('contributors', []))}")
 
 start = time.perf_counter()
-data = s.execute(s.query(Crosswalk.SCHEMA_ORG).search("Shakespeare")[1, 5])
+data = s.execute(s.query(Crosswalk.OPDS).search("Shakespeare")[1, 5])
 ms = (time.perf_counter() - start) * 1000
 first = data["results"][0] if data["results"] else {}
-print(f"{'Crosswalk.SCHEMA_ORG':<50} | {data['total']:>6} | {ms:>7.1f}ms | keys: {list(first.keys())}")
+print(f"{'Crosswalk.OPDS':<50} | {data['total']:>6} | {ms:>7.1f}ms | keys: {list(first.get('metadata', {}).keys())}")
 
 # === Pagination ===
 print("-" * 130)
@@ -222,7 +222,7 @@ print("-" * 130)
 def my_transformer(row):
     return {
         "id": row.book_id,
-        "name": f"{row.title} by {row.primary_author or 'Unknown'}",
+        "name": f"{row.title} by {row.all_authors or 'Unknown'}",
         "popularity": row.downloads,
     }
 

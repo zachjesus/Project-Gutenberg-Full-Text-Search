@@ -110,7 +110,7 @@ _ORDER_COLUMNS = {
 _SELECT = "book_id, title, all_authors, downloads, dc"
 
 _SUBQUERY = """book_id, title, all_authors, all_subjects, downloads, dc,
-    copyrighted, primary_lang, is_audio,
+    copyrighted, lang_codes, is_audio,
     max_author_birthyear, min_author_birthyear,
     max_author_deathyear, min_author_deathyear,
     locc_codes,
@@ -389,7 +389,8 @@ class SearchQuery:
         return self
     
     def lang(self, code: str) -> SearchQuery:
-        self._filter.append(("primary_lang = :lang", {"lang": str(code)}))
+        """Filter by language code (matches any language in multi-language books)."""
+        self._filter.append((":lang = ANY(lang_codes)", {"lang": str(code)}))
         return self
     
     def text_only(self) -> SearchQuery:

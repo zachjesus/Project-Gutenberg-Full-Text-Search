@@ -72,13 +72,13 @@ SELECT
          WHERE mbbs.fk_books = b.pk)
     ) AS book_text,
     
+    -- All language codes as array for multi-language filtering
     COALESCE((
-        SELECT l.pk
+        SELECT ARRAY_AGG(l.pk)
         FROM mn_books_langs mbl
         JOIN langs l ON mbl.fk_langs = l.pk
         WHERE mbl.fk_books = b.pk
-        LIMIT 1
-    ), 'en') AS primary_lang,
+    ), ARRAY['en']::text[]) AS lang_codes,
     
     EXISTS (
         SELECT 1 FROM mn_books_categories mbc
@@ -442,7 +442,7 @@ CREATE UNIQUE INDEX idx_mv_pk ON mv_books_dc (book_id);
 -- ============================================================================
 CREATE INDEX idx_mv_btree_downloads ON mv_books_dc (downloads DESC);
 CREATE INDEX idx_mv_btree_copyrighted ON mv_books_dc (copyrighted);
-CREATE INDEX idx_mv_btree_lang ON mv_books_dc (primary_lang);
+CREATE INDEX idx_mv_gin_lang ON mv_books_dc USING GIN (lang_codes);
 CREATE INDEX idx_mv_btree_is_audio ON mv_books_dc (is_audio) WHERE is_audio = true;
 CREATE INDEX idx_mv_btree_birthyear_max ON mv_books_dc (max_author_birthyear) WHERE max_author_birthyear IS NOT NULL;
 CREATE INDEX idx_mv_btree_birthyear_min ON mv_books_dc (min_author_birthyear) WHERE min_author_birthyear IS NOT NULL;
