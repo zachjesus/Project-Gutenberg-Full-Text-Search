@@ -1851,15 +1851,15 @@ class FullTextSearch:
         # Use window function for random top-N per bookshelf
         sql = """
             WITH ranked AS (
-                SELECT 
+                SELECT
                     mbb.fk_bookshelves AS bs_id,
-                    mv.book_id, mv.title, mv.all_authors, mv.downloads, mv.dc,
+                    mv.book_id, mv.title, mv.all_authors, mv.downloads, mv.dc, mv.is_audio,
                     ROW_NUMBER() OVER (PARTITION BY mbb.fk_bookshelves ORDER BY RANDOM()) AS rn
                 FROM mn_books_bookshelves mbb
                 JOIN mv_books_dc mv ON mv.book_id = mbb.fk_books
                 WHERE mbb.fk_bookshelves = ANY(:ids)
             )
-            SELECT bs_id, book_id, title, all_authors, downloads, dc
+            SELECT bs_id, book_id, title, all_authors, downloads, dc, is_audio
             FROM ranked
             WHERE rn <= :sample_limit
             ORDER BY bs_id, RANDOM()
