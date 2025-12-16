@@ -976,9 +976,8 @@ _SUBQUERY = """book_id, title, all_authors, all_subjects, downloads, release_dat
 
 # Accepted filetypes for OPDS output
 _OPDS_FILETYPES = {
-    "epub.images", "epub.noimages", "epub3.images",
-    "kf8.images", "kindle.images", "kindle.noimages",
-    "pdf", "index",
+    "epub3.images",  # Modern EPUB3 with images (98%+ of books)
+    "index",         # Audiobook HTML index
 }
 
 
@@ -1223,13 +1222,18 @@ def _crosswalk_opds(row) -> dict[str, Any]:
     # Links - must have at least one acquisition link
     links = []
     
-    # Acquisition links
+    # Acquisition links - prioritize by content type
+    # Audiobooks: use HTML index | Text books: use EPUB3 with images only
+    target_format = "index" if row.is_audio else "epub3.images"
+    
     for f in dc.get("format", []):
         fn = f.get("filename")
         if not fn:
             continue
         ftype = (f.get("filetype") or "").strip().lower()
-        if ftype not in _OPDS_FILETYPES:
+        
+        # Only include the target format (index for audio, epub3.images for text)
+        if ftype != target_format:
             continue
         
         href = fn if fn.startswith(("http://", "https://")) else f"https://www.gutenberg.org/{fn.lstrip('/')}"
@@ -1241,6 +1245,7 @@ def _crosswalk_opds(row) -> dict[str, Any]:
         if f.get("hr_filetype"):
             link["title"] = f["hr_filetype"]
         links.append(link)
+        break  # Only one link per book
     
     # Build result
     result = {"metadata": metadata, "links": links}

@@ -453,7 +453,9 @@ class API:
                 "title": child['label'],
                 "type": "application/opds+json"
             }
-            if not child['has_children']:
+            if child['has_children']:
+                nav_item["rel"] = "subsection"
+            else:
                 nav_item["rel"] = "http://opds-spec.org/acquisition"
             navigation.append(nav_item)
         
