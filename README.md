@@ -108,14 +108,13 @@ count = fts.count(fts.query().search("Shakespeare"))
 | CONTAINS | `ILIKE` | GIN trigram | Medium | Substring matching ("venture" matches "Adventure") |
 
 **FTS (Full-Text Search)** - Default, fastest option:
-- Uses PostgreSQL `websearch_to_tsquery` for intelligent word matching
+- Uses PostgreSQL `websearch_to_tsquery` 
 - Supports boolean operators (see below)
 - Default sort: **Relevance** (fast with GIN indexes)
 - Best for: Precise searches, exact word matching
 
 **Fuzzy Search** - Typo-tolerant:
 - Uses trigram similarity for typo tolerance
-- Supports basic operators (quotes, AND, NOT)
 - Default sort: **Downloads** (relevance ranking is slow)
 - Best for: User input with potential misspellings
 
@@ -149,16 +148,6 @@ FTS mode supports PostgreSQL `websearch_to_tsquery` syntax:
 - `adventure novel` - Books with both "adventure" AND "novel"
 - `twain or clemens` - Books with "twain" OR "clemens"
 - `science -fiction` - Books with "science" but NOT "fiction"
-
-### Fuzzy Search Operators
-
-Fuzzy mode supports basic boolean operators:
-
-| Operator | Example | Meaning |
-|----------|---------|---------|
-| `"phrase"` | `"exact phrase"` | Exact substring match |
-| `word1 word2` | `shakespeare hamlet` | AND (all words must fuzzy match) |
-| `-word` | `shakespeare -hamlet` | NOT (exclude word) |
 
 ### Search Fields
 
@@ -310,7 +299,7 @@ result = fts.execute(fts.query(Crosswalk.CUSTOM).search("Shakespeare"))
 
 ### What is OPDS?
 
-OPDS (Open Publication Distribution System) is a standard for distributing digital publications. OPDS 2.0 uses JSON feeds that e-reader apps (like Thorium, KOReader, etc.) can browse to discover and download books.
+OPDS (Open Publication Distribution System) is a standard for distributing digital publications. OPDS 2.0 uses JSON feeds that e-reader apps (like Thorium, FBReader, etc.) can browse to discover and download books.
 
 ### Running the Server
 
@@ -321,28 +310,6 @@ python OPDS.py
 Server runs at `http://127.0.0.1:8080/opds/`
 
 ### OPDS Catalog Structure
-
-The catalog uses a hierarchical structure:
-
-1. **Root Catalog** (`/opds/`)
-   - **Navigation links**: Search options, browse by LoCC, popular/recent/random
-   - **Groups**: Curated bookshelves with sample publications (20 books each)
-   - **Links**: Self, start, search template
-
-2. **Navigation Pages**
-   - Browse endpoints (LoCC, bookshelves, subjects)
-   - Show navigation links to subcategories
-   - No publications, just navigation
-
-3. **Publication Pages**
-   - Search results, filtered browse results
-   - Show actual book publications
-   - Include **facets** for filtering
-
-4. **Facets**
-   - Dynamic filter options based on current results
-   - Top Subjects (appears when query/filters active)
-   - Sort By, Broad Genre, Copyright, Format, Language
 
 ### Endpoints
 
@@ -449,7 +416,7 @@ Facets appear on publication pages (search results, browse results) and provide 
 
 **Sort By:**
 - Most Popular (downloads)
-- Relevance (only shown when applicable)
+- Relevance
 - Title (A-Z)
 - Author (A-Z)
 - Random
@@ -474,18 +441,10 @@ Facets appear on publication pages (search results, browse results) and provide 
 
 ### Navigation Behavior
 
-- **Search bar**: Preserves search type (Fuzzy/FTS) and context (bookshelf, subject, LoCC)
+- **Search**: Preserves search type (Fuzzy/FTS) and context (bookshelf, subject, LoCC)
 - **Back navigation**: All pages include `rel="start"` link to homepage
 - **Up navigation**: Parent pages include `rel="up"` link
 - **Search template**: Uses `{?query}` syntax for OPDS-compliant search URIs
-
-### Performance Optimizations
-
-- **MN tables**: All filters (bookshelf, subject, LoCC) use many-to-many tables instead of JSONB
-- **Denormalized columns**: `release_date` is a real DATE column with index (fast sorting)
-- **Batch queries**: Homepage bookshelves fetched in single query
-- **Indexed everything**: All common filters and sorts use proper indexes
-- **Top subjects**: Only fetched when query/filters active (500 book sample)
 
 ## Testing
 

@@ -1603,6 +1603,8 @@ class FullTextSearch:
         """
         Get top N subjects from a search result set for dynamic facets.
         
+        Uses MN table (mn_books_subjects) for fast indexed lookups instead of JSONB.
+        
         Args:
             q: SearchQuery to derive subjects from
             limit: Maximum number of subjects to return (default 15)
@@ -1622,7 +1624,7 @@ class FullTextSearch:
         where_parts = [p for p in (search_sql, filter_sql) if p]
         where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
-        # Count subjects from the sampled matching books (JOIN beats IN(subquery) here)
+        # Use MN table for fast indexed lookups - much faster than JSONB parsing
         sql = f"""
             WITH matched_books AS (
                 SELECT book_id
@@ -1631,10 +1633,13 @@ class FullTextSearch:
                 ORDER BY {order_sql}
                 LIMIT :max_books
             )
-            SELECT s.pk AS id, s.subject AS name, COUNT(*) AS count
+            SELECT 
+                s.pk AS id,
+                s.subject AS name,
+                COUNT(*) AS count
             FROM matched_books mb
             JOIN mn_books_subjects mbs ON mbs.fk_books = mb.book_id
-            JOIN subjects s ON mbs.fk_subjects = s.pk
+            JOIN subjects s ON s.pk = mbs.fk_subjects
             GROUP BY s.pk, s.subject
             ORDER BY count DESC
             LIMIT :limit
