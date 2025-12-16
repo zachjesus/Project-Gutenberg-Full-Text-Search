@@ -46,7 +46,63 @@ SELECT COUNT(*) FROM mv_books_dc WHERE dc IS NOT NULL;
 -- ============================================================================
 SELECT COUNT(*) FROM mv_books_dc WHERE dc->'creators' @> '[{"id": 1}]'::jsonb;
 SELECT COUNT(*) FROM mv_books_dc WHERE dc->'subjects' @> '[{"id": 1}]'::jsonb;
-SELECT COUNT(*) FROM mv_books_dc WHERE dc->'bookshelves' @> '[{"id": 1}]'::jsonb;
+
+-- ============================================================================
+-- Prewarm MN tables (used for fast bookshelf/subject lookups)
+-- ============================================================================
+DO $$
+DECLARE
+    blocks BIGINT;
+BEGIN
+    -- Prewarm mn_books_bookshelves (used for homepage bookshelf groups)
+    blocks := pg_prewarm('mn_books_bookshelves', 'buffer', 'main');
+    RAISE NOTICE 'mn_books_bookshelves: % blocks', blocks;
+    
+    -- Prewarm mn_books_subjects
+    blocks := pg_prewarm('mn_books_subjects', 'buffer', 'main');
+    RAISE NOTICE 'mn_books_subjects: % blocks', blocks;
+    
+    -- Prewarm mn_books_loccs (used for LoCC filtering)
+    blocks := pg_prewarm('mn_books_loccs', 'buffer', 'main');
+    RAISE NOTICE 'mn_books_loccs: % blocks', blocks;
+    
+    -- Prewarm loccs table
+    blocks := pg_prewarm('loccs', 'buffer', 'main');
+    RAISE NOTICE 'loccs: % blocks', blocks;
+    
+    -- Prewarm bookshelves table
+    blocks := pg_prewarm('bookshelves', 'buffer', 'main');
+    RAISE NOTICE 'bookshelves: % blocks', blocks;
+    
+    -- Prewarm subjects table
+    blocks := pg_prewarm('subjects', 'buffer', 'main');
+    RAISE NOTICE 'subjects: % blocks', blocks;
+END $$;
+
+-- Touch MN table indexes (fast bookshelf queries for homepage)
+SELECT COUNT(*) FROM mn_books_bookshelves WHERE fk_bookshelves = 644;  -- Adventure
+SELECT COUNT(*) FROM mn_books_bookshelves WHERE fk_bookshelves = 654;  -- American Literature  
+SELECT COUNT(*) FROM mn_books_bookshelves WHERE fk_bookshelves = 653;  -- British Literature
+SELECT COUNT(*) FROM mn_books_bookshelves WHERE fk_bookshelves = 638;  -- Science-Fiction & Fantasy
+SELECT COUNT(*) FROM mn_books_bookshelves WHERE fk_bookshelves = 640;  -- Crime, Thrillers & Mystery
+
+-- Prewarm the LATERAL join pattern used by homepage
+SELECT bs_id, COUNT(*) FROM (SELECT unnest(ARRAY[644,654,653,652,651,650,649,643,645,634,637,642,639,638,640,646,641,636,633]) AS bs_id) bs
+CROSS JOIN LATERAL (
+    SELECT mv.book_id
+    FROM mn_books_bookshelves mbb
+    JOIN mv_books_dc mv ON mv.book_id = mbb.fk_books
+    WHERE mbb.fk_bookshelves = bs.bs_id
+    ORDER BY mv.downloads DESC
+    LIMIT 20
+) samples
+GROUP BY bs_id;
+
+-- Prewarm LoCC queries (uses MN table now)
+SELECT COUNT(*) FROM mn_books_loccs mbl JOIN loccs lc ON lc.pk = mbl.fk_loccs WHERE lc.pk LIKE 'P%';  -- Literature
+SELECT COUNT(*) FROM mn_books_loccs mbl JOIN loccs lc ON lc.pk = mbl.fk_loccs WHERE lc.pk LIKE 'Q%';  -- Science
+SELECT COUNT(*) FROM mn_books_loccs mbl JOIN loccs lc ON lc.pk = mbl.fk_loccs WHERE lc.pk LIKE 'D%';  -- History
+SELECT COUNT(*) FROM mn_books_loccs mbl JOIN loccs lc ON lc.pk = mbl.fk_loccs WHERE lc.pk LIKE 'E%';  -- America
 
 -- ============================================================================
 -- Touch GIN array index (locc_codes)

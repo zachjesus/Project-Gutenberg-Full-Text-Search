@@ -44,6 +44,7 @@ Denormalized view containing all book metadata for fast searching.
 | all_authors | text | Pipe-delimited author names |
 | all_subjects | text | Pipe-delimited subjects |
 | downloads | int | Download count (last 30 days) |
+| release_date | date | Publication date (denormalized for fast sorting) |
 | lang_codes | text[] | Array of language codes |
 | copyrighted | int | 0 = public domain, 1 = copyrighted |
 | is_audio | bool | True if audiobook |
@@ -54,7 +55,7 @@ Denormalized view containing all book metadata for fast searching.
 
 | Type | Columns | Use Case |
 |------|---------|----------|
-| B-tree | downloads, copyrighted, is_audio, author birth/death years | Sorting, equality filters |
+| B-tree | downloads, release_date, copyrighted, is_audio, author birth/death years | Sorting, equality filters |
 | GIN tsvector | tsvec, title_tsvec, author_tsvec, subject_tsvec, etc. | Full-text search |
 | GIN trigram | title, all_authors, book_text, etc. | Substring search (ILIKE) |
 | GiST trigram | title, all_authors, book_text, etc. | Fuzzy/typo-tolerant search |
@@ -85,7 +86,7 @@ from FullTextSearch import FullTextSearch, SearchField, SearchType, OrderBy, Cro
 fts = FullTextSearch()
 
 # Simple search
-result = fts.execute(fts.query().search("Shakespeare")[1, 25])
+result = fts.execute(fts.query().search("Shakespeare")[1, 28])
 print(result["total"], result["results"])
 
 # Get single book
@@ -100,25 +101,64 @@ count = fts.count(fts.query().search("Shakespeare"))
 
 ### Search Types
 
-| Type | Operator | Index | Use Case |
-|------|----------|-------|----------|
-| FTS | `@@` websearch_to_tsquery | GIN tsvector | Stemmed word matching ("running" matches "run") |
-| FUZZY | `<%` word_similarity | GiST trigram | Typo tolerance ("Shakspeare" matches "Shakespeare") |
-| CONTAINS | `ILIKE` | GIN trigram | Substring matching ("venture" matches "Adventure") |
+| Type | Operator | Index | Speed | Use Case |
+|------|----------|-------|-------|----------|
+| FTS | `@@` websearch_to_tsquery | GIN tsvector | Fast | Stemmed word matching, supports operators |
+| FUZZY | `<%` word_similarity | GiST trigram | Slower | Typo tolerance ("Shakspeare" matches "Shakespeare") |
+| CONTAINS | `ILIKE` | GIN trigram | Medium | Substring matching ("venture" matches "Adventure") |
+
+**FTS (Full-Text Search)** - Default, fastest option:
+- Uses PostgreSQL `websearch_to_tsquery` for intelligent word matching
+- Supports boolean operators (see below)
+- Default sort: **Relevance** (fast with GIN indexes)
+- Best for: Precise searches, exact word matching
+
+**Fuzzy Search** - Typo-tolerant:
+- Uses trigram similarity for typo tolerance
+- Supports basic operators (quotes, AND, NOT)
+- Default sort: **Downloads** (relevance ranking is slow)
+- Best for: User input with potential misspellings
 
 ```python
 from FullTextSearch import SearchField, SearchType
 
-# FTS (default)
+# FTS (default) - fast, supports operators
 q.search("Shakespeare")
 q.search("Adventure", SearchField.TITLE)
 
-# Fuzzy
+# Fuzzy - typo-tolerant, slower
 q.search("Shakspeare", SearchField.AUTHOR, SearchType.FUZZY)
 
-# Contains
+# Contains - substring matching
 q.search("venture", SearchField.TITLE, SearchType.CONTAINS)
 ```
+
+### FTS Search Operators
+
+FTS mode supports PostgreSQL `websearch_to_tsquery` syntax:
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `"phrase"` | `"to be or not to be"` | Exact phrase match |
+| `word1 word2` | `shakespeare hamlet` | AND (both words required) |
+| `word1 or word2` | `romeo or juliet` | OR (either word) |
+| `-word` | `shakespeare -hamlet` | NOT (exclude word) |
+
+**Examples:**
+- `"exact phrase"` - Finds exact phrase
+- `adventure novel` - Books with both "adventure" AND "novel"
+- `twain or clemens` - Books with "twain" OR "clemens"
+- `science -fiction` - Books with "science" but NOT "fiction"
+
+### Fuzzy Search Operators
+
+Fuzzy mode supports basic boolean operators:
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `"phrase"` | `"exact phrase"` | Exact substring match |
+| `word1 word2` | `shakespeare hamlet` | AND (all words must fuzzy match) |
+| `-word` | `shakespeare -hamlet` | NOT (exclude word) |
 
 ### Search Fields
 
@@ -134,9 +174,7 @@ q.search("venture", SearchField.TITLE, SearchType.CONTAINS)
 
 ### Filter Methods
 
-Built-in filters with index support.
-
-`LanguageCode` and `LoccClass` mirror the OPDS facet options; human-readable labels are available via `LANGUAGE_LIST` and `LOCC_LIST`.
+All filters use optimized MN table joins or indexed columns for fast performance.
 
 ```python
 from FullTextSearch import LanguageCode, LoccClass, FileType, Encoding
@@ -167,23 +205,18 @@ q.author_born_before(1700)
 q.author_died_after(1950)
 q.author_died_before(1800)
 
-# By release date
+# By release date (uses denormalized column - fast!)
 q.released_after("2020-01-01")
 q.released_before("2000-01-01")
 
-# By classification
+# By classification (uses MN table - fast!)
 q.locc(LoccClass.P)              # LoCC top-level class (prefix match)
 q.locc("PS")                     # Optional: narrower LoCC prefix match
 
-# By file type
-q.file_type(FileType.EPUB)
-q.file_type(FileType.PDF)
-q.encoding(Encoding.UTF8)
-
-# By ID (JSONB containment)
+# By ID (uses MN tables - fast!)
 q.author_id(53)                  # Mark Twain
-q.subject_id(1)
-q.bookshelf_id(68)
+q.subject_id(1)                  # Uses mn_books_subjects
+q.bookshelf_id(68)               # Uses mn_books_bookshelves
 q.has_contributor("Illustrator")
 
 # Custom SQL
@@ -204,7 +237,7 @@ result = fts.execute(
     .public_domain()
     .downloads_gte(100)
     .order_by(OrderBy.DOWNLOADS)
-    [1, 25]
+    [1, 28]
 )
 ```
 
@@ -213,21 +246,26 @@ result = fts.execute(
 ```python
 from FullTextSearch import OrderBy, SortDirection
 
-q.order_by(OrderBy.RELEVANCE)                    # ts_rank_cd or word_similarity
+q.order_by(OrderBy.RELEVANCE)                    # ts_rank_cd (FTS) or word_similarity (Fuzzy)
 q.order_by(OrderBy.DOWNLOADS)                    # Default for non-search queries
 q.order_by(OrderBy.TITLE)
 q.order_by(OrderBy.AUTHOR)
-q.order_by(OrderBy.RELEASE_DATE)
+q.order_by(OrderBy.RELEASE_DATE)                 # Fast! Uses denormalized column
 q.order_by(OrderBy.RANDOM)
 q.order_by(OrderBy.DOWNLOADS, SortDirection.ASC) # Explicit direction
 ```
 
+**Default sorting:**
+- **FTS with query**: Relevance (fast with GIN indexes)
+- **Fuzzy with query**: Downloads (relevance is slow for trigrams)
+- **No query**: Downloads
+
 ### Pagination
 
 ```python
-q[1, 25]   # Page 1, 25 results per page
+q[1, 28]   # Page 1, 28 results per page (default)
 q[3, 50]   # Page 3, 50 results per page
-q[2]       # Page 2, default 25 per page
+q[2]       # Page 2, default 28 per page
 ```
 
 ### Output Formats (Crosswalks)
@@ -262,15 +300,19 @@ result = fts.execute(fts.query(Crosswalk.CUSTOM).search("Shakespeare"))
 {
     "results": [...],      # List of books in crosswalk format
     "page": 1,             # Current page
-    "page_size": 25,       # Results per page
+    "page_size": 28,       # Results per page
     "total": 1234,         # Total matching books
-    "total_pages": 50      # Total pages
+    "total_pages": 45      # Total pages
 }
 ```
 
-## OPDS Server
+## OPDS 2.0 Server
 
-### Running
+### What is OPDS?
+
+OPDS (Open Publication Distribution System) is a standard for distributing digital publications. OPDS 2.0 uses JSON feeds that e-reader apps (like Thorium, KOReader, etc.) can browse to discover and download books.
+
+### Running the Server
 
 ```bash
 python OPDS.py
@@ -278,38 +320,172 @@ python OPDS.py
 
 Server runs at `http://127.0.0.1:8080/opds/`
 
+### OPDS Catalog Structure
+
+The catalog uses a hierarchical structure:
+
+1. **Root Catalog** (`/opds/`)
+   - **Navigation links**: Search options, browse by LoCC, popular/recent/random
+   - **Groups**: Curated bookshelves with sample publications (20 books each)
+   - **Links**: Self, start, search template
+
+2. **Navigation Pages**
+   - Browse endpoints (LoCC, bookshelves, subjects)
+   - Show navigation links to subcategories
+   - No publications, just navigation
+
+3. **Publication Pages**
+   - Search results, filtered browse results
+   - Show actual book publications
+   - Include **facets** for filtering
+
+4. **Facets**
+   - Dynamic filter options based on current results
+   - Top Subjects (appears when query/filters active)
+   - Sort By, Broad Genre, Copyright, Format, Language
+
 ### Endpoints
 
-| Endpoint | Description |
-|----------|-------------|
-| /opds/search | Search with facets |
-| /opds/search?query=shakespeare | Keyword search |
-| /opds/search?query=twain&field=author | Field-specific search |
-| /opds/search?lang=en&copyrighted=false | Filtered browse |
+#### Root Catalog
+```
+GET /opds/
+```
+Returns homepage with:
+- Navigation links (Search Fuzzy, Search FTS, Browse by LoCC, Most Popular, Recently Added, Random)
+- Groups: All curated bookshelves with 20 sample publications each
 
-### Query Parameters
+#### Search
+```
+GET /opds/search
+GET /opds/search?query=shakespeare
+GET /opds/search?query=twain&field=fts_keyword&sort=relevance
+```
 
-| Parameter | Values | Default |
-|-----------|--------|---------|
-| query | Search text | (empty) |
-| field | keyword, title, author, fuzzy_keyword, fuzzy_title, fuzzy_author | keyword |
-| lang | Language code (en, de, fr, etc.) | (any) |
-| copyrighted | true, false | (any) |
-| audiobook | true, false | (any) |
-| locc | LoCC code (A, B, PS, etc.) | (any) |
-| sort | downloads, title, author, release_date, random | relevance |
-| sort_order | asc, desc | (default per field) |
-| page | Page number | 1 |
-| limit | Results per page (1-100) | 20 |
+**Search Types:**
+- **Fuzzy** (`field=fuzzy_keyword`): Typo-tolerant, slower, sorts by downloads by default
+- **FTS** (`field=fts_keyword`): Fast, exact matching, supports operators, sorts by relevance by default
 
-### OPDS 2.0 Compliance
+**Query Parameters:**
+| Parameter | Values | Default | Description |
+|-----------|--------|---------|-------------|
+| query | Search text | (empty) | Search query (supports operators in FTS mode) |
+| field | `keyword`, `fts_keyword`, `fuzzy_keyword`, `title`, `author`, etc. | `keyword` (fuzzy) | Search field and type |
+| lang | Language code (en, de, fr, etc.) | (any) | Filter by language |
+| copyrighted | `true`, `false` | (any) | Filter by copyright status |
+| audiobook | `true`, `false` | (any) | Filter by format |
+| locc | LoCC code (A, B, PS, etc.) | (any) | Filter by Library of Congress classification |
+| sort | `downloads`, `relevance`, `title`, `author`, `release_date`, `random` | `relevance` (FTS) or `downloads` (Fuzzy) | Sort order |
+| sort_order | `asc`, `desc` | (default per field) | Sort direction |
+| page | Page number | 1 | Pagination |
+| limit | 1-100 | 28 | Results per page |
 
-The server implements OPDS 2.0 with:
+**FTS Operators** (when using `field=fts_keyword`):
+- `"exact phrase"` - Phrase matching
+- `word1 word2` - AND (both required)
+- `word1 or word2` - OR (either word)
+- `-word` - NOT (exclude)
 
-- Navigation and publications collections
-- Faceted search (search field, sort, subject, copyright, format, language)
-- Pagination with first/previous/next/last links
-- Search URI template
+**Example searches:**
+- `/opds/search?query=shakespeare` - Fuzzy search (typo-tolerant)
+- `/opds/search?query=shakespeare&field=fts_keyword` - FTS search (fast, exact)
+- `/opds/search?query="romeo and juliet"` - Exact phrase (FTS)
+- `/opds/search?query=twain or clemens` - OR operator (FTS)
+- `/opds/search?query=science -fiction` - Exclude word (FTS)
+
+#### Browse by LoCC (Subject Classification)
+```
+GET /opds/loccs
+GET /opds/loccs?parent=P
+GET /opds/loccs?parent=PS&query=novel
+```
+
+Hierarchical navigation through Library of Congress Classification:
+- Without `parent`: Shows top-level classes (A, B, C, D, E, F, G, H, J, K, L, M, N, P, Q, R, S, T, U, V, Z)
+- With `parent`: Shows subclasses or books (if leaf node)
+- Supports search and filtering within any LoCC class
+- Shows **Top Subjects** facet when viewing books
+
+#### Bookshelves
+```
+GET /opds/bookshelves
+GET /opds/bookshelves?category=Literature
+GET /opds/bookshelves?id=644
+GET /opds/bookshelves?id=644&query=adventure
+```
+
+Curated bookshelves organized by category:
+- Without params: Lists all categories
+- With `category`: Lists bookshelves in that category
+- With `id`: Shows books in that bookshelf with full search/filtering
+- Shows **Top Subjects** facet when viewing books
+- Search bar stays within the bookshelf context
+
+#### Subjects
+```
+GET /opds/subjects
+GET /opds/subjects?id=1
+GET /opds/subjects?id=1&query=novel
+```
+
+Subject browsing:
+- Without `id`: Lists top 100 subjects by book count
+- With `id`: Shows books with that subject, supports search/filtering
+- Search bar stays within the subject context
+
+#### Genres (Broad Genre)
+```
+GET /opds/genres
+GET /opds/genres?code=P
+GET /opds/genres?code=P&query=poetry
+```
+
+Broad genre browsing using top-level LoCC codes:
+- Without `code`: Lists all broad genres with book counts
+- With `code`: Shows books in that genre with search/filtering
+
+### Facets (Dynamic Filters)
+
+Facets appear on publication pages (search results, browse results) and provide dynamic filtering options:
+
+**Sort By:**
+- Most Popular (downloads)
+- Relevance (only shown when applicable)
+- Title (A-Z)
+- Author (A-Z)
+- Random
+
+**Top Subjects in Results:**
+- Appears when query or filters are active
+- Shows up to 15 most common subjects in current results
+- Clicking a subject navigates to that subject page (facet disappears, no loop)
+
+**Broad Genre:**
+- Library of Congress top-level classes
+- Only shown in main search (not in LoCC browse)
+
+**Copyright Status:**
+- Any / Public Domain / Copyrighted
+
+**Format:**
+- Any / Text / Audiobook
+
+**Language:**
+- Any / English / German / French / etc.
+
+### Navigation Behavior
+
+- **Search bar**: Preserves search type (Fuzzy/FTS) and context (bookshelf, subject, LoCC)
+- **Back navigation**: All pages include `rel="start"` link to homepage
+- **Up navigation**: Parent pages include `rel="up"` link
+- **Search template**: Uses `{?query}` syntax for OPDS-compliant search URIs
+
+### Performance Optimizations
+
+- **MN tables**: All filters (bookshelf, subject, LoCC) use many-to-many tables instead of JSONB
+- **Denormalized columns**: `release_date` is a real DATE column with index (fast sorting)
+- **Batch queries**: Homepage bookshelves fetched in single query
+- **Indexed everything**: All common filters and sorts use proper indexes
+- **Top subjects**: Only fetched when query/filters active (500 book sample)
 
 ## Testing
 
@@ -353,7 +529,7 @@ flowchart TB
     FTS -->|"create_engine()"| ENGINE
     ENGINE -->|"bind"| FACTORY
     FTS -->|".query()"| SQ
-    SQ -->|".search().lang()[1,25]"| SQ
+    SQ -->|".search().lang()[1,28]"| SQ
     FTS -->|".execute(q)"| FACTORY
     FACTORY -->|"with Session()"| SESS
     SESS -->|"checkout"| Pool
@@ -363,7 +539,7 @@ flowchart TB
 **Typical usage:**
 ```python
 fts = FullTextSearch()                          # Creates engine + session factory
-q = fts.query().search("Shakespeare")[1, 25]    # Builds SearchQuery (no DB hit)
+q = fts.query().search("Shakespeare")[1, 28]    # Builds SearchQuery (no DB hit)
 result = fts.execute(q)                         # Session checks out connection, runs query
 ```
 

@@ -36,6 +36,7 @@ SELECT
     b.title,
     b.tsvec,      
     b.downloads,
+    b.release_date,
     b.copyrighted,
     
     -- All authors sorted by heading then name (pipe-delimited for display)
@@ -448,7 +449,7 @@ CREATE INDEX idx_mv_btree_birthyear_max ON mv_books_dc (max_author_birthyear) WH
 CREATE INDEX idx_mv_btree_birthyear_min ON mv_books_dc (min_author_birthyear) WHERE min_author_birthyear IS NOT NULL;
 CREATE INDEX idx_mv_btree_deathyear_max ON mv_books_dc (max_author_deathyear) WHERE max_author_deathyear IS NOT NULL;
 CREATE INDEX idx_mv_btree_deathyear_min ON mv_books_dc (min_author_deathyear) WHERE min_author_deathyear IS NOT NULL;
-CREATE INDEX idx_mv_btree_date ON mv_books_dc (text_to_date_immutable(dc->>'date'));
+CREATE INDEX idx_mv_btree_release_date ON mv_books_dc (release_date DESC NULLS LAST);
 
 -- ============================================================================
 -- GIN: Array containment (locc_codes)
