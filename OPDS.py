@@ -57,7 +57,7 @@ class API:
     def index(self):
         """Root catalog - groups with featured publications and navigation links."""
         # Build navigation: Search options first, then LoCC, then sort options
-         navigation = [
+        navigation = [
             {
                 "href": "/opds/search?field=fuzzy_keyword",
                 "title": "Search Fuzzy (Typo-Tolerant, Slower)",
