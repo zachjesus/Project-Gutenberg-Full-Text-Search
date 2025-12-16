@@ -33,6 +33,10 @@ __all__ = [
     "get_locc_children",
     "get_locc_path",
     "get_broad_genres",
+    # Formatting utilities
+    "format_crosswalk_result",
+    "strip_marc_subfields",
+    "format_title",
 ]
 
 
@@ -979,9 +983,121 @@ _OPDS_FILETYPES = {
 
 
 # =============================================================================
+# Formatting Helpers (based on libgutenberg.DublinCore)
+# =============================================================================
+
+# Pre-compiled regexes for performance (O(1) lookup, avoid re-compiling)
+_RE_MARC_SUBFIELD = re.compile(r"\$[a-z]")
+_RE_MARC_SPSEP = re.compile(r"[\n ](,|:)([A-Za-z0-9])")
+_RE_CURLY_SINGLE = re.compile("[\u2018\u2019]")  # ' '
+_RE_CURLY_DOUBLE = re.compile("[\u201c\u201d]")  # " "
+_RE_TITLE_SPLITTER = re.compile(r"\s*[;:]\s*")
+
+# O(1) lookups for field classification
+_TITLE_FIELDS = frozenset({"title", "subtitle", "alt_title"})
+_STRIP_FIELDS = frozenset({
+    "author", "name", "publisher", "subject", "bookshelf",
+    "subjects", "bookshelves",  # Plural forms for list items
+})
+
+
+def _strip_marc_subfields(text: str | None) -> str | None:
+    """
+    Strip MARC subfield markers ($a, $b, etc.) from text.
+    Based on libgutenberg.DublinCore.strip_marc_subfields.
+    """
+    if not text or not isinstance(text, str):
+        return text
+    text = _RE_MARC_SUBFIELD.sub("", text)
+    text = _RE_MARC_SPSEP.sub(r"\1 \2", text)  # move space to behind separator
+    return text.strip()
+
+
+def _format_title(text: str | None) -> str | None:
+    """
+    Format title: straighten curly quotes, normalize title/subtitle separators.
+    Based on libgutenberg.DublinCore.format_title.
+    """
+    if not text or not isinstance(text, str):
+        return text
+    text = _RE_CURLY_SINGLE.sub("'", text)
+    text = _RE_CURLY_DOUBLE.sub('"', text)
+    text = _RE_TITLE_SPLITTER.sub(": ", text)  # "Title: Subtitle" format
+    return text.rstrip(": ").strip()  # Clean trailing ": " like "Beowulf: " -> "Beowulf"
+
+
+def _format_value(key: str, value: str) -> str:
+    """Format a single string value based on its field name. O(1) lookup."""
+    if key in _TITLE_FIELDS:
+        return _format_title(_strip_marc_subfields(value)) or value
+    if key in _STRIP_FIELDS:
+        return _strip_marc_subfields(value) or value
+    return value
+
+
+def _format_dict(d: dict) -> dict:
+    """
+    Recursively format string fields in a dict.
+    O(n) where n = total number of values (not n² - single pass).
+    """
+    result = {}
+    for key, value in d.items():
+        if isinstance(value, str):
+            result[key] = _format_value(key, value)
+        elif isinstance(value, dict):
+            result[key] = _format_dict(value)
+        elif isinstance(value, list):
+            result[key] = _format_list(key, value)
+        else:
+            result[key] = value
+    return result
+
+
+def _format_list(parent_key: str, lst: list) -> list:
+    """
+    Format items in a list. O(n) - single pass over items.
+    """
+    result = []
+    for item in lst:
+        if isinstance(item, dict):
+            result.append(_format_dict(item))
+        elif isinstance(item, str):
+            # For list items, use parent key context for formatting decision
+            result.append(_format_value(parent_key, item))
+        else:
+            result.append(item)
+    return result
+
+
+def format_crosswalk_result(func: Callable) -> Callable:
+    """
+    Decorator that automatically formats title, author, publisher, etc. in crosswalk results.
+    Strips MARC subfields and normalizes curly quotes/separators.
+    
+    Time complexity: O(n) where n = total values in result tree (single recursive pass).
+    """
+    def wrapper(row) -> dict[str, Any]:
+        result = func(row)
+        return _format_dict(result)
+    return wrapper
+
+
+# Public aliases for formatting utilities (exported in __all__)
+def strip_marc_subfields(text: str | None) -> str | None:
+    """Strip MARC subfield markers ($a, $b, etc.) from text."""
+    return _strip_marc_subfields(text)
+
+
+def format_title(text: str | None) -> str | None:
+    """Format title: straighten curly quotes, normalize separators."""
+    return _format_title(text)
+
+
+# =============================================================================
 # Crosswalk Functions
 # =============================================================================
 
+@format_crosswalk_result
 def _crosswalk_full(row) -> dict[str, Any]:
     return {
         "book_id": row.book_id,
@@ -992,6 +1108,7 @@ def _crosswalk_full(row) -> dict[str, Any]:
     }
 
 
+@format_crosswalk_result
 def _crosswalk_mini(row) -> dict[str, Any]:
     return {
         "id": row.book_id,
@@ -1001,6 +1118,7 @@ def _crosswalk_mini(row) -> dict[str, Any]:
     }
 
 
+@format_crosswalk_result
 def _crosswalk_pg(row) -> dict[str, Any]:
     dc = row.dc or {}
     return {
@@ -1023,6 +1141,7 @@ def _crosswalk_pg(row) -> dict[str, Any]:
     }
 
 
+@format_crosswalk_result
 def _crosswalk_opds(row) -> dict[str, Any]:
     """Transform row to OPDS 2.0 publication format per spec."""
     dc = row.dc or {}
@@ -1724,13 +1843,13 @@ class FullTextSearch:
         if not bookshelf_ids:
             return {}
         
-        # Use window function for top-N per bookshelf (works better with SQLAlchemy)
+        # Use window function for random top-N per bookshelf
         sql = """
             WITH ranked AS (
                 SELECT 
                     mbb.fk_bookshelves AS bs_id,
                     mv.book_id, mv.title, mv.all_authors, mv.downloads, mv.dc,
-                    ROW_NUMBER() OVER (PARTITION BY mbb.fk_bookshelves ORDER BY mv.downloads DESC) AS rn
+                    ROW_NUMBER() OVER (PARTITION BY mbb.fk_bookshelves ORDER BY RANDOM()) AS rn
                 FROM mn_books_bookshelves mbb
                 JOIN mv_books_dc mv ON mv.book_id = mbb.fk_books
                 WHERE mbb.fk_bookshelves = ANY(:ids)
@@ -1738,7 +1857,7 @@ class FullTextSearch:
             SELECT bs_id, book_id, title, all_authors, downloads, dc
             FROM ranked
             WHERE rn <= :sample_limit
-            ORDER BY bs_id, downloads DESC
+            ORDER BY bs_id, RANDOM()
         """
         
         # Get totals using MN table (fast indexed count)
