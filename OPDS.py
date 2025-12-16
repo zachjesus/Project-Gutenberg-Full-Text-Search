@@ -62,13 +62,13 @@ class API:
                 "href": "/opds/search?field=fuzzy_keyword",
                 "title": "Search Fuzzy (Typo-Tolerant, Slower)",
                 "type": "application/opds+json",
-                "rel": "search"
+                "rel": "subsection"
             },
             {
                 "href": "/opds/search?field=fts_keyword",
                 "title": "Search FTS (Strict, Faster, Operators: \"quotes for exact\", or, and, - for negate)",
                 "type": "application/opds+json",
-                "rel": "search"
+                "rel": "subsection"
             },
             {
                 "href": "/opds/loccs",
