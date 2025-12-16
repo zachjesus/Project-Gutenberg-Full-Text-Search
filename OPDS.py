@@ -57,7 +57,7 @@ class API:
     def index(self):
         """Root catalog - groups with featured publications and navigation links."""
         # Build navigation: Search options first, then LoCC, then sort options
-        navigation = [
+         navigation = [
             {
                 "href": "/opds/search?field=fuzzy_keyword",
                 "title": "Search Fuzzy (Typo-Tolerant, Slower)",
@@ -136,7 +136,7 @@ class API:
             "links": [
                 {"rel": "self", "href": "/opds/", "type": "application/opds+json"},
                 {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
-                {"rel": "search", "href": "/opds/search{?query}", "type": "application/opds+json", "templated": True}
+                {"rel": "search", "href": "/opds/search{?query,lang,sort,copyrighted,audiobook,locc}", "type": "application/opds+json", "templated": True}
             ],
             "navigation": navigation,
             "groups": groups
@@ -257,7 +257,7 @@ class API:
                 {"rel": "self", "href": self_href, "type": "application/opds+json"},
                 {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
                 {"rel": "up", "href": "/opds/genres", "type": "application/opds+json"},
-                {"rel": "search", "href": f"/opds/genres?code={code}{{&query}}", "type": "application/opds+json", "templated": True}
+                {"rel": "search", "href": f"/opds/genres?code={code}{{&query,lang,sort,copyrighted,audiobook}}", "type": "application/opds+json", "templated": True}
             ],
             "publications": result["results"],
             "facets": facets
@@ -429,7 +429,7 @@ class API:
                     {"rel": "self", "href": self_href, "type": "application/opds+json"},
                     {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
                     {"rel": "up", "href": f"/opds/loccs?parent={up_parent}" if up_parent else "/opds/loccs", "type": "application/opds+json"},
-                    {"rel": "search", "href": f"/opds/loccs?parent={parent}{{&query}}", "type": "application/opds+json", "templated": True}
+                    {"rel": "search", "href": f"/opds/loccs?parent={parent}{{&query,lang,sort,copyrighted,audiobook}}", "type": "application/opds+json", "templated": True}
                 ],
                 "publications": result["results"],
                 "facets": facets
@@ -665,7 +665,7 @@ class API:
                     {"rel": "self", "href": self_href, "type": "application/opds+json"},
                     {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
                     {"rel": "up", "href": up_href, "type": "application/opds+json"},
-                    {"rel": "search", "href": f"/opds/bookshelves?id={bookshelf_id}{{&query}}", "type": "application/opds+json", "templated": True}
+                    {"rel": "search", "href": f"/opds/bookshelves?id={bookshelf_id}{{&query,lang,sort,copyrighted,audiobook}}", "type": "application/opds+json", "templated": True}
                 ],
                 "publications": result["results"],
                 "facets": facets
@@ -890,7 +890,7 @@ class API:
                     {"rel": "self", "href": self_href, "type": "application/opds+json"},
                     {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
                     {"rel": "up", "href": "/opds/subjects", "type": "application/opds+json"},
-                    {"rel": "search", "href": f"/opds/subjects?id={subject_id}{{&query}}", "type": "application/opds+json", "templated": True}
+                    {"rel": "search", "href": f"/opds/subjects?id={subject_id}{{&query,lang,sort,copyrighted,audiobook}}", "type": "application/opds+json", "templated": True}
                 ],
                 "publications": result["results"],
                 "facets": facets
@@ -1139,7 +1139,7 @@ class API:
                 {"rel": "self", "href": self_href, "type": "application/opds+json"},
                 {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
                 {"rel": "up", "href": "/opds/", "type": "application/opds+json"},
-                {"rel": "search", "href": f"/opds/search?field={field}{{&query}}", "type": "application/opds+json", "templated": True}
+                {"rel": "search", "href": f"/opds/search?field={field}{{&query,lang,sort,copyrighted,audiobook,locc}}", "type": "application/opds+json", "templated": True}
             ],
             "publications": result["results"],
             "facets": self._build_facets(query, limit, field, lang, copyrighted, audiobook, sort, sort_order, locc, top_subjects)
