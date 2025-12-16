@@ -1081,12 +1081,8 @@ class API:
                 direction = SortDirection.ASC if sort_order == "asc" else SortDirection.DESC if sort_order == "desc" else None
                 q.order_by(OrderBy(sort), direction)
             elif query.strip():
-                # FTS: use relevance ranking (fast with GIN indexes)
-                # Fuzzy: use downloads (trigram relevance ranking is slow)
-                if search_type == SearchType.FTS:
-                    q.order_by(OrderBy.RELEVANCE)
-                else:
-                    q.order_by(OrderBy.DOWNLOADS)
+                # Both FTS and Fuzzy use relevance ranking for searches
+                q.order_by(OrderBy.RELEVANCE)
             else:
                 q.order_by(OrderBy.DOWNLOADS)
             
