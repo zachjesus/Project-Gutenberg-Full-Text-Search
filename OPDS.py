@@ -451,12 +451,9 @@ class API:
             nav_item = {
                 "href": f"/opds/loccs?parent={child['code']}",
                 "title": child['label'],
-                "type": "application/opds+json"
+                "type": "application/opds+json",
+                "rel": "subsection"  # All LoCC items use subsection (they link to feeds, not files)
             }
-            if child['has_children']:
-                nav_item["rel"] = "subsection"
-            else:
-                nav_item["rel"] = "http://opds-spec.org/acquisition"
             navigation.append(nav_item)
         
         links = [
