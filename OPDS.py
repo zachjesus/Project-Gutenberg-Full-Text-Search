@@ -136,7 +136,7 @@ class API:
             "links": [
                 {"rel": "self", "href": "/opds/", "type": "application/opds+json"},
                 {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
-                {"rel": "search", "href": "/opds/search{?query,lang,sort,copyrighted,audiobook,locc}", "type": "application/opds+json", "templated": True}
+                {"rel": "search", "href": "/opds/search{?query,field,lang,sort,copyrighted,audiobook,locc}", "type": "application/opds+json", "templated": True}
             ],
             "navigation": navigation,
             "groups": groups
@@ -282,12 +282,13 @@ class API:
                 "sort": srt, "sort_order": srt_ord
             }
             return _url_with_params("/opds/genres", params)
-        
+
         return [
             {
                 "metadata": {"title": "Sort By"},
                 "links": [
                     _facet_link(url(query, lang, copyrighted, audiobook, "downloads", "desc"), "Most Popular", sort == "downloads" or not sort),
+                    _facet_link(url(query, lang, copyrighted, audiobook, "relevance", ""), "Relevance", sort == "relevance"),
                     _facet_link(url(query, lang, copyrighted, audiobook, "title", "asc"), "Title (A-Z)", sort == "title"),
                     _facet_link(url(query, lang, copyrighted, audiobook, "author", "asc"), "Author (A-Z)", sort == "author"),
                     _facet_link(url(query, lang, copyrighted, audiobook, "random", ""), "Random", sort == "random"),
@@ -494,6 +495,7 @@ class API:
                 "metadata": {"title": "Sort By"},
                 "links": [
                     _facet_link(url(query, lang, copyrighted, audiobook, "downloads", "desc"), "Most Popular", sort == "downloads" or not sort),
+                    _facet_link(url(query, lang, copyrighted, audiobook, "relevance", ""), "Relevance", sort == "relevance"),
                     _facet_link(url(query, lang, copyrighted, audiobook, "title", "asc"), "Title (A-Z)", sort == "title"),
                     _facet_link(url(query, lang, copyrighted, audiobook, "author", "asc"), "Author (A-Z)", sort == "author"),
                     _facet_link(url(query, lang, copyrighted, audiobook, "random", ""), "Random", sort == "random"),
@@ -753,6 +755,7 @@ class API:
                 "metadata": {"title": "Sort By"},
                 "links": [
                     _facet_link(url(query, lang, copyrighted, audiobook, "downloads", "desc"), "Most Popular", sort == "downloads" or not sort),
+                    _facet_link(url(query, lang, copyrighted, audiobook, "relevance", ""), "Relevance", sort == "relevance"),
                     _facet_link(url(query, lang, copyrighted, audiobook, "title", "asc"), "Title (A-Z)", sort == "title"),
                     _facet_link(url(query, lang, copyrighted, audiobook, "author", "asc"), "Author (A-Z)", sort == "author"),
                     _facet_link(url(query, lang, copyrighted, audiobook, "random", ""), "Random", sort == "random"),
@@ -943,12 +946,13 @@ class API:
                 "sort": srt, "sort_order": srt_ord
             }
             return _url_with_params("/opds/subjects", params)
-        
+
         return [
             {
                 "metadata": {"title": "Sort By"},
                 "links": [
                     _facet_link(url(query, lang, copyrighted, audiobook, "downloads", "desc"), "Most Popular", sort == "downloads" or not sort),
+                    _facet_link(url(query, lang, copyrighted, audiobook, "relevance", ""), "Relevance", sort == "relevance"),
                     _facet_link(url(query, lang, copyrighted, audiobook, "title", "asc"), "Title (A-Z)", sort == "title"),
                     _facet_link(url(query, lang, copyrighted, audiobook, "author", "asc"), "Author (A-Z)", sort == "author"),
                     _facet_link(url(query, lang, copyrighted, audiobook, "random", ""), "Random", sort == "random"),
@@ -1139,7 +1143,7 @@ class API:
                 {"rel": "self", "href": self_href, "type": "application/opds+json"},
                 {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
                 {"rel": "up", "href": "/opds/", "type": "application/opds+json"},
-                {"rel": "search", "href": f"/opds/search?field={field}{{&query,lang,sort,copyrighted,audiobook,locc}}", "type": "application/opds+json", "templated": True}
+                {"rel": "search", "href": "/opds/search{?query,field,lang,sort,copyrighted,audiobook,locc}", "type": "application/opds+json", "templated": True}
             ],
             "publications": result["results"],
             "facets": self._build_facets(query, limit, field, lang, copyrighted, audiobook, sort, sort_order, locc, top_subjects)
