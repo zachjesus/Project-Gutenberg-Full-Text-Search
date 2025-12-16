@@ -964,7 +964,7 @@ _ORDER_COLUMNS = {
     OrderBy.RANDOM: ("RANDOM()", None, None),
 }
 
-_SELECT = "book_id, title, all_authors, downloads, dc"
+_SELECT = "book_id, title, all_authors, downloads, dc, is_audio"
 
 _SUBQUERY = """book_id, title, all_authors, all_subjects, downloads, release_date, dc,
     copyrighted, lang_codes, is_audio,
