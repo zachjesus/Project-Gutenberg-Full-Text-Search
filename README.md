@@ -1,6 +1,6 @@
 # Gutenberg OPDS 2.0 and Full-Text Search
 
-A PostgreSQL-backed full-text search engine for Project Gutenberg and OPDS 2.0 catalog.
+A PostgreSQL-backed full-text search engine for Project Gutenberg and the new OPDS 2.0 catalog.
 
 ## Requirements
 
