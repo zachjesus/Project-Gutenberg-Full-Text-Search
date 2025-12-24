@@ -25,7 +25,7 @@ __all__ = [
     "LanguageCode",
     "LoccClass",
     "LANGUAGE_LIST",
-    "LOCC_LIST",
+    "LOCC_TOP",
     "LOCC_HIERARCHY",
     "LANGUAGE_LABELS",
     "LOCC_LABELS",
@@ -33,11 +33,19 @@ __all__ = [
     "get_locc_children",
     "get_locc_path",
     "get_broad_genres",
-    # Formatting utilities
     "format_crosswalk_result",
     "strip_marc_subfields",
     "format_title",
 ]
+
+from .constants import (
+    LANGUAGE_LIST,
+    LOCC_TOP,
+    LOCC_HIERARCHY,
+    LANGUAGE_LABELS,
+    LOCC_LABELS,
+    CURATED_BOOKSHELVES,
+)
 
 
 class Config:
@@ -47,732 +55,37 @@ class Config:
     PGUSER = 'postgres'
 
 
-# =============================================================================
-# Catalog vocabulary (OPDS facet labels)
-# =============================================================================
-
-LANGUAGE_LIST = [
-    {'code': 'en', 'label': 'English'},
-    {'code': 'af', 'label': 'Afrikaans'},
-    {'code': 'ale', 'label': 'Aleut'},
-    {'code': 'ang', 'label': 'Old English'},
-    {'code': 'ar', 'label': 'Arabic'},
-    {'code': 'arp', 'label': 'Arapaho'},
-    {'code': 'bg', 'label': 'Bulgarian'},
-    {'code': 'bgs', 'label': 'Basa Banyumasan'},
-    {'code': 'bo', 'label': 'Tibetan'},
-    {'code': 'br', 'label': 'Breton'},
-    {'code': 'brx', 'label': 'Bodo'},
-    {'code': 'ca', 'label': 'Catalan'},
-    {'code': 'ceb', 'label': 'Cebuano'},
-    {'code': 'cs', 'label': 'Czech'},
-    {'code': 'csb', 'label': 'Kashubian'},
-    {'code': 'cy', 'label': 'Welsh'},
-    {'code': 'da', 'label': 'Danish'},
-    {'code': 'de', 'label': 'German'},
-    {'code': 'el', 'label': 'Greek'},
-    {'code': 'enm', 'label': 'Middle English'},
-    {'code': 'eo', 'label': 'Esperanto'},
-    {'code': 'es', 'label': 'Spanish'},
-    {'code': 'et', 'label': 'Estonian'},
-    {'code': 'fa', 'label': 'Persian'},
-    {'code': 'fi', 'label': 'Finnish'},
-    {'code': 'fr', 'label': 'French'},
-    {'code': 'fur', 'label': 'Friulian'},
-    {'code': 'fy', 'label': 'Western Frisian'},
-    {'code': 'ga', 'label': 'Irish'},
-    {'code': 'gl', 'label': 'Galician'},
-    {'code': 'gla', 'label': 'Scottish Gaelic'},
-    {'code': 'grc', 'label': 'Ancient Greek'},
-    {'code': 'hai', 'label': 'Haida'},
-    {'code': 'he', 'label': 'Hebrew'},
-    {'code': 'hu', 'label': 'Hungarian'},
-    {'code': 'ia', 'label': 'Interlingua'},
-    {'code': 'ilo', 'label': 'Iloko'},
-    {'code': 'is', 'label': 'Icelandic'},
-    {'code': 'it', 'label': 'Italian'},
-    {'code': 'iu', 'label': 'Inuktitut'},
-    {'code': 'ja', 'label': 'Japanese'},
-    {'code': 'kha', 'label': 'Khasi'},
-    {'code': 'kld', 'label': 'Klamath-Modoc'},
-    {'code': 'ko', 'label': 'Korean'},
-    {'code': 'la', 'label': 'Latin'},
-    {'code': 'lt', 'label': 'Lithuanian'},
-    {'code': 'mi', 'label': 'Māori'},
-    {'code': 'myn', 'label': 'Mayan Languages'},
-    {'code': 'nah', 'label': 'Nahuatl'},
-    {'code': 'nai', 'label': 'North American Indian'},
-    {'code': 'nap', 'label': 'Neapolitan'},
-    {'code': 'nav', 'label': 'Navajo'},
-    {'code': 'nl', 'label': 'Dutch'},
-    {'code': 'no', 'label': 'Norwegian'},
-    {'code': 'oc', 'label': 'Occitan'},
-    {'code': 'oji', 'label': 'Ojibwa'},
-    {'code': 'pl', 'label': 'Polish'},
-    {'code': 'pt', 'label': 'Portuguese'},
-    {'code': 'rmq', 'label': 'Romani'},
-    {'code': 'ro', 'label': 'Romanian'},
-    {'code': 'ru', 'label': 'Russian'},
-    {'code': 'sa', 'label': 'Sanskrit'},
-    {'code': 'sco', 'label': 'Scots'},
-    {'code': 'sl', 'label': 'Slovenian'},
-    {'code': 'sr', 'label': 'Serbian'},
-    {'code': 'sv', 'label': 'Swedish'},
-    {'code': 'te', 'label': 'Telugu'},
-    {'code': 'tl', 'label': 'Tagalog'},
-    {'code': 'yi', 'label': 'Yiddish'},
-    {'code': 'zh', 'label': 'Chinese'},
-]
-
-LOCC_LIST = [
-    {'code': 'A', 'label': 'General Works'},
-    {'code': 'B', 'label': 'Philosophy, Psychology, Religion'},
-    {'code': 'C', 'label': 'History: Auxiliary Sciences'},
-    {'code': 'D', 'label': 'History: General and Eastern Hemisphere'},
-    {'code': 'E', 'label': 'History: America'},
-    {'code': 'F', 'label': 'History: America (Local)'},
-    {'code': 'G', 'label': 'Geography, Anthropology, Recreation'},
-    {'code': 'H', 'label': 'Social Sciences'},
-    {'code': 'J', 'label': 'Political Science'},
-    {'code': 'K', 'label': 'Law'},
-    {'code': 'L', 'label': 'Education'},
-    {'code': 'M', 'label': 'Music'},
-    {'code': 'N', 'label': 'Fine Arts'},
-    {'code': 'P', 'label': 'Language and Literature'},
-    {'code': 'Q', 'label': 'Science'},
-    {'code': 'R', 'label': 'Medicine'},
-    {'code': 'S', 'label': 'Agriculture'},
-    {'code': 'T', 'label': 'Technology'},
-    {'code': 'U', 'label': 'Military Science'},
-    {'code': 'V', 'label': 'Naval Science'},
-    {'code': 'Z', 'label': 'Bibliography, Library Science'},
-]
-
-# Complete LOCC hierarchy with all subclasses for drill-down navigation
-LOCC_HIERARCHY = {
-    # A - General Works
-    'A': 'General Works',
-    'AC': 'Collections, Series, Collected works',
-    'AE': 'Encyclopedias',
-    'AG': 'Dictionaries and other general reference books',
-    'AI': 'Indexes',
-    'AM': 'Museums, Collectors and collecting',
-    'AN': 'Newspapers',
-    'AP': 'Periodicals',
-    'AS': 'Academies and International Associations',
-    'AY': 'Yearbooks, Almanacs, Directories',
-    'AZ': 'History of scholarship and learning',
-    # B - Philosophy, Psychology, Religion
-    'B': 'Philosophy, Psychology, Religion',
-    'BC': 'Logic',
-    'BD': 'Speculative Philosophy',
-    'BF': 'Psychology, Psychoanalysis',
-    'BH': 'Aesthetics',
-    'BJ': 'Ethics, Social usages, Etiquette',
-    'BL': 'Religion: General, Miscellaneous',
-    'BM': 'Judaism',
-    'BP': 'Islam, Bahaism, Theosophy',
-    'BQ': 'Buddhism',
-    'BR': 'Christianity',
-    'BS': 'The Bible',
-    'BT': 'Doctrinal theology, Christology',
-    'BV': 'Practical theology, Worship',
-    'BX': 'Churches, Church movements',
-    # C - History: Auxiliary Sciences
-    'C': 'History: Auxiliary Sciences',
-    'CB': 'History of civilization',
-    'CC': 'Archaeology',
-    'CD': 'Diplomatics, Archives, Seals',
-    'CE': 'Technical Chronology, Calendar',
-    'CJ': 'Numismatics',
-    'CN': 'Inscriptions, Epigraphy',
-    'CR': 'Heraldry',
-    'CS': 'Genealogy',
-    'CT': 'Biography',
-    # D - History: General and Eastern Hemisphere
-    'D': 'History: General and Eastern Hemisphere',
-    'DA': 'Great Britain, Ireland',
-    'DB': 'Austria, Hungary, Czech Republic',
-    'DC': 'France, Andorra, Monaco',
-    'DD': 'Germany',
-    'DE': 'The Mediterranean, Greco-Roman World',
-    'DF': 'Greece',
-    'DG': 'Italy, Vatican City, Malta',
-    'DH': 'Netherlands, Belgium, Luxemburg',
-    'DJ': 'Netherlands',
-    'DJK': 'Eastern Europe',
-    'DK': 'Russia, Soviet Republics, Poland',
-    'DL': 'Northern Europe, Scandinavia',
-    'DP': 'Spain, Portugal',
-    'DQ': 'Switzerland',
-    'DR': 'Balkan Peninsula, Turkey',
-    'DS': 'Asia',
-    'DT': 'Africa',
-    'DU': 'Oceania (South Seas)',
-    'DX': 'History of Romanies',
-    'D501': 'World War I (1914-1918)',
-    'D731': 'World War II (1939-1945)',
-    # E - History: America
-    'E': 'History: America',
-    'E011': 'America (General)',
-    'E151': 'United States',
-    'E186': 'Colonial History (1607-1775)',
-    'E201': 'Revolution (1775-1783)',
-    'E300': 'Revolution to Civil War (1783-1861)',
-    'E456': 'Civil War period (1861-1865)',
-    'E660': 'Late nineteenth century (1865-1900)',
-    'E740': 'Twentieth century',
-    'E838': 'Later twentieth century (1961-)',
-    'E895': 'Twenty-first century',
-    # F - United States and Americas Local History
-    'F': 'United States and Americas Local History',
-    'F001': 'New England',
-    'F106': 'Atlantic coast, Middle Atlantic',
-    'F206': 'The South, South Atlantic',
-    'F296': 'Gulf States, West Florida',
-    'F350.5': 'Mississippi River and Valley',
-    'F396': 'Old Southwest, Lower Mississippi',
-    'F476': 'Old Northwest, Northwest Territory',
-    'F516': 'Ohio River and Valley',
-    'F590.3': 'The West, Great Plains',
-    'F721': 'Rocky Mountains, Yellowstone',
-    'F786': 'New Southwest, Colorado River',
-    'F850.5': 'Pacific States',
-    'F965': 'Territories of the United States',
-    'F970': 'Insular possessions',
-    'F975': 'Central American affiliations',
-    'F1001': 'Canada',
-    'F1201': 'Mexico',
-    'F1401': 'Latin America: General',
-    'F1461': 'Guatemala',
-    'F1481': 'El Salvador',
-    'F1501': 'Honduras',
-    'F1521': 'Nicaragua',
-    'F1541': 'Costa Rica',
-    'F1561': 'Panama',
-    'F1601': 'West Indies',
-    'F1751': 'Cuba',
-    'F1861': 'Jamaica',
-    'F1900': 'Hispaniola (Haiti, Dominican Republic)',
-    'F1951': 'Puerto Rico',
-    'F2001': 'Lesser Antilles',
-    'F2131': 'British West Indies',
-    'F2155': 'Caribbean area',
-    'F2201': 'South America: General',
-    'F2251': 'Colombia',
-    'F2301': 'Venezuela',
-    'F2351': 'Guiana',
-    'F2501': 'Brazil',
-    'F2661': 'Paraguay',
-    'F2701': 'Uruguay',
-    'F2801': 'Argentina',
-    'F3051': 'Chile',
-    'F3301': 'Bolivia',
-    'F3401': 'Peru',
-    'F3701': 'Ecuador',
-    # G - Geography, Anthropology, Recreation
-    'G': 'Geography, Anthropology, Recreation',
-    'GA': 'Mathematical geography, Cartography',
-    'GB': 'Physical geography',
-    'GC': 'Oceanography',
-    'GE': 'Environmental Sciences',
-    'GF': 'Human ecology, Anthropogeography',
-    'GN': 'Anthropology',
-    'GR': 'Folklore',
-    'GT': 'Manners and customs',
-    'GV': 'Recreation, Leisure',
-    # H - Social Sciences
-    'H': 'Social Sciences',
-    'HA': 'Statistics',
-    'HB': 'Economic theory, Demography',
-    'HC': 'Economic history and conditions',
-    'HD': 'Economic history, Production',
-    'HE': 'Transportation and communications',
-    'HF': 'Commerce',
-    'HG': 'Finance',
-    'HJ': 'Public finance',
-    'HM': 'Sociology',
-    'HN': 'Social history, Social problems',
-    'HQ': 'Family, Marriage, Sex and Gender',
-    'HS': 'Societies: secret, benevolent, etc.',
-    'HT': 'Communities, Classes, Races',
-    'HV': 'Social pathology, Public Welfare',
-    'HX': 'Socialism, Communism, Anarchism',
-    # J - Political Science
-    'J': 'Political Science',
-    'JA': 'Political science (General)',
-    'JC': 'Political theory',
-    'JF': 'Political institutions, Public admin',
-    'JK': 'Political inst.: United States',
-    'JL': 'Political inst.: America',
-    'JN': 'Political inst.: Europe',
-    'JQ': 'Political inst.: Asia, Africa, Oceania',
-    'JS': 'Local government, Municipal',
-    'JV': 'Colonies, International migration',
-    'JX': 'International law',
-    'JZ': 'International relations',
-    # K - Law
-    'K': 'Law',
-    'KBM': 'Jewish law',
-    'KBP': 'Islamic law',
-    'KBR': 'History of canon law',
-    'KBU': 'Roman Catholic Church law',
-    'KD': 'United Kingdom and Ireland',
-    'KDZ': 'America, North America',
-    'KE': 'Canada',
-    'KF': 'United States',
-    'KG': 'Latin America, Mexico, Central America',
-    'KH': 'South America',
-    'KJ': 'Europe',
-    'KL': 'Asia, Eurasia, Africa, Pacific',
-    'KLA': 'Russia, Soviet Union',
-    'KM': 'Asia',
-    'KN': 'South Asia, Southeast Asia, East Asia',
-    'KNN': 'China',
-    'KNX': 'Japan',
-    'KP': 'South Asia, Southeast Asia',
-    'KQ': 'Africa',
-    'KR': 'Africa (continued)',
-    'KS': 'Africa (continued)',
-    'KT': 'Africa (continued)',
-    'KU': 'Pacific area, Australia',
-    'KV': 'Pacific area jurisdictions',
-    'KWX': 'Antarctica',
-    'KZ': 'Law of nations',
-    'KZA': 'Law of the sea',
-    'KZD': 'Space law',
-    # L - Education
-    'L': 'Education',
-    'LA': 'History of education',
-    'LB': 'Theory and practice',
-    'LC': 'Special aspects of education',
-    'LD': 'Institutions: United States',
-    'LE': 'Institutions: America (except US)',
-    'LF': 'Institutions: Europe',
-    'LG': 'Institutions: Asia, Africa, Oceania',
-    'LH': 'College magazines and papers',
-    'LJ': 'Student fraternities, United States',
-    'LT': 'Textbooks',
-    # M - Music
-    'M': 'Music',
-    'ML': 'Literature of music',
-    'MT': 'Musical instruction and study',
-    # N - Fine Arts
-    'N': 'Fine Arts',
-    'NA': 'Architecture',
-    'NB': 'Sculpture',
-    'NC': 'Drawing, Design, Illustration',
-    'ND': 'Painting',
-    'NE': 'Print media',
-    'NK': 'Decorative and Applied Arts',
-    'NX': 'Arts in general',
-    # P - Language and Literature
-    'P': 'Language and Literature',
-    'PA': 'Classical Languages and Literature',
-    'PB': 'General works',
-    'PC': 'Romance languages',
-    'PD': 'Germanic and Scandinavian',
-    'PE': 'English',
-    'PF': 'West Germanic',
-    'PG': 'Slavic, Russian',
-    'PH': 'Finno-Ugrian and Basque',
-    'PJ': 'Oriental languages',
-    'PK': 'Indo-Iranian literatures',
-    'PL': 'Eastern Asia, Africa, Oceania',
-    'PM': 'Indigenous and Artificial Languages',
-    'PN': 'Literature: General, Criticism',
-    'PQ': 'Romance literatures',
-    'PR': 'English literature',
-    'PS': 'American and Canadian literature',
-    'PT': 'Germanic, Scandinavian, Icelandic',
-    'PZ': 'Juvenile belles lettres',
-    # Q - Science
-    'Q': 'Science',
-    'QA': 'Mathematics',
-    'QB': 'Astronomy',
-    'QC': 'Physics',
-    'QD': 'Chemistry',
-    'QE': 'Geology',
-    'QH': 'Natural history',
-    'QH301': 'Biology',
-    'QK': 'Botany',
-    'QL': 'Zoology',
-    'QM': 'Human anatomy',
-    'QP': 'Physiology',
-    'QR': 'Microbiology',
-    # R - Medicine
-    'R': 'Medicine',
-    'RA': 'Public aspects of medicine',
-    'RB': 'Pathology',
-    'RC': 'Internal medicine',
-    'RD': 'Surgery',
-    'RE': 'Ophthalmology',
-    'RF': 'Otorhinolaryngology',
-    'RG': 'Gynecology and obstetrics',
-    'RJ': 'Pediatrics',
-    'RK': 'Dentistry',
-    'RL': 'Dermatology',
-    'RM': 'Therapeutics, Pharmacology',
-    'RS': 'Pharmacy and materia medica',
-    'RT': 'Nursing',
-    'RV': 'Botanic, Thomsonian medicine',
-    'RX': 'Homeopathy',
-    'RZ': 'Other systems of medicine',
-    # S - Agriculture
-    'S': 'Agriculture',
-    'SB': 'Plant culture',
-    'SD': 'Forestry',
-    'SF': 'Animal culture',
-    'SH': 'Aquaculture, Fisheries, Angling',
-    'SK': 'Hunting sports',
-    # T - Technology
-    'T': 'Technology',
-    'TA': 'Engineering, Civil engineering',
-    'TC': 'Ocean engineering',
-    'TD': 'Environmental technology',
-    'TE': 'Highway engineering',
-    'TF': 'Railroad engineering',
-    'TG': 'Bridge engineering',
-    'TH': 'Building construction',
-    'TJ': 'Mechanical engineering',
-    'TK': 'Electrical, Electronics, Nuclear',
-    'TL': 'Motor vehicles, Aeronautics',
-    'TN': 'Mining engineering, Metallurgy',
-    'TP': 'Chemical technology',
-    'TR': 'Photography',
-    'TS': 'Manufactures',
-    'TT': 'Handicrafts, Arts and crafts',
-    'TX': 'Home economics',
-    # U - Military Science
-    'U': 'Military Science',
-    'UA': 'Armies: Organization, distribution',
-    'UB': 'Military administration',
-    'UC': 'Maintenance and transportation',
-    'UD': 'Infantry',
-    'UE': 'Cavalry, Armor',
-    'UF': 'Artillery',
-    'UG': 'Military engineering',
-    'UH': 'Other services',
-    # V - Naval Science
-    'V': 'Naval Science',
-    'VA': 'Navies: Organization, distribution',
-    'VB': 'Naval administration',
-    'VC': 'Naval maintenance',
-    'VD': 'Naval seamen',
-    'VE': 'Marines',
-    'VF': 'Naval ordnance',
-    'VG': 'Minor services of navies',
-    'VK': 'Navigation, Merchant marine',
-    'VM': 'Naval architecture, Shipbuilding',
-    # Z - Bibliography, Library Science
-    'Z': 'Bibliography, Library Science',
-    'ZA': 'Information resources',
-}
-
-LANGUAGE_LABELS = {i["code"]: i["label"] for i in LANGUAGE_LIST}
-LOCC_LABELS = {i["code"]: i["label"] for i in LOCC_LIST}
-
-# Curated bookshelves organized by category (from Gutenberg.org)
-CURATED_BOOKSHELVES = {
-    "Literature": [
-        {"id": 644, "name": "Adventure"},
-        {"id": 654, "name": "American Literature"},
-        {"id": 653, "name": "British Literature"},
-        {"id": 652, "name": "French Literature"},
-        {"id": 651, "name": "German Literature"},
-        {"id": 650, "name": "Russian Literature"},
-        {"id": 649, "name": "Classics of Literature"},
-        {"id": 643, "name": "Biographies"},
-        {"id": 645, "name": "Novels"},
-        {"id": 634, "name": "Short Stories"},
-        {"id": 637, "name": "Poetry"},
-        {"id": 642, "name": "Plays/Films/Dramas"},
-        {"id": 639, "name": "Romance"},
-        {"id": 638, "name": "Science-Fiction & Fantasy"},
-        {"id": 640, "name": "Crime, Thrillers & Mystery"},
-        {"id": 646, "name": "Mythology, Legends & Folklore"},
-        {"id": 641, "name": "Humour"},
-        {"id": 636, "name": "Children & Young Adult Reading"},
-        {"id": 633, "name": "Literature - Other"},
-    ],
-    "Science & Technology": [
-        {"id": 671, "name": "Engineering & Technology"},
-        {"id": 672, "name": "Mathematics"},
-        {"id": 667, "name": "Science - Physics"},
-        {"id": 668, "name": "Science - Chemistry/Biochemistry"},
-        {"id": 669, "name": "Science - Biology"},
-        {"id": 670, "name": "Science - Earth/Agricultural/Farming"},
-        {"id": 673, "name": "Research Methods/Statistics/Info Sys"},
-        {"id": 685, "name": "Environmental Issues"},
-    ],
-    "History": [
-        {"id": 656, "name": "History - American"},
-        {"id": 657, "name": "History - British"},
-        {"id": 658, "name": "History - European"},
-        {"id": 659, "name": "History - Ancient"},
-        {"id": 660, "name": "History - Medieval/Middle Ages"},
-        {"id": 661, "name": "History - Early Modern (c. 1450-1750)"},
-        {"id": 662, "name": "History - Modern (1750+)"},
-        {"id": 663, "name": "History - Religious"},
-        {"id": 664, "name": "History - Royalty"},
-        {"id": 665, "name": "History - Warfare"},
-        {"id": 666, "name": "History - Schools & Universities"},
-        {"id": 655, "name": "History - Other"},
-        {"id": 686, "name": "Archaeology & Anthropology"},
-    ],
-    "Social Sciences & Society": [
-        {"id": 695, "name": "Business/Management"},
-        {"id": 696, "name": "Economics"},
-        {"id": 689, "name": "Law & Criminology"},
-        {"id": 690, "name": "Gender & Sexuality Studies"},
-        {"id": 688, "name": "Psychiatry/Psychology"},
-        {"id": 693, "name": "Sociology"},
-        {"id": 694, "name": "Politics"},
-        {"id": 701, "name": "Parenthood & Family Relations"},
-        {"id": 700, "name": "Old Age & the Elderly"},
-    ],
-    "Arts & Culture": [
-        {"id": 675, "name": "Art"},
-        {"id": 674, "name": "Architecture"},
-        {"id": 677, "name": "Music"},
-        {"id": 676, "name": "Fashion"},
-        {"id": 698, "name": "Journalism/Media/Writing"},
-        {"id": 687, "name": "Language & Communication"},
-        {"id": 647, "name": "Essays, Letters & Speeches"},
-    ],
-    "Religion & Philosophy": [
-        {"id": 692, "name": "Religion/Spirituality"},
-        {"id": 691, "name": "Philosophy & Ethics"},
-    ],
-    "Lifestyle & Hobbies": [
-        {"id": 678, "name": "Cooking & Drinking"},
-        {"id": 680, "name": "Sports/Hobbies"},
-        {"id": 679, "name": "How To ..."},
-        {"id": 648, "name": "Travel Writing"},
-        {"id": 683, "name": "Nature/Gardening/Animals"},
-        {"id": 703, "name": "Sexuality & Erotica"},
-    ],
-    "Health & Medicine": [
-        {"id": 681, "name": "Health & Medicine"},
-        {"id": 682, "name": "Drugs/Alcohol/Pharmacology"},
-        {"id": 684, "name": "Nutrition"},
-    ],
-    "Education & Reference": [
-        {"id": 697, "name": "Encyclopedias/Dictionaries/Reference"},
-        {"id": 704, "name": "Teaching & Education"},
-        {"id": 702, "name": "Reports & Conference Proceedings"},
-        {"id": 699, "name": "Journals"},
-    ],
-}
-
-
 def get_locc_children(parent: str = "") -> list[dict]:
     """
-    Get immediate children of a LOCC code for hierarchical navigation.
-    
-    Args:
-        parent: Parent LOCC code (empty string for top-level classes)
-        
-    Returns:
-        List of dicts with 'code', 'label', and 'has_children' keys
-        
-    Hierarchy structure:
-    - Level 0 (root): Single letters (A, B, C, ...)
-    - Level 1: Two-letter codes (AC, AE, BC, ...) - immediate children of single letters
-    - Level 2+: Letter codes with numbers (E011, D501, QH301, F350.5, ...)
+    Very simple LOCC children: return every LOCC key that starts with the parent
+    (except the parent itself). Top-level (empty parent) returns LOCC_TOP.
     """
     parent = (parent or "").strip().upper()
-    
+
     if not parent:
-        # Root level: return all single-letter codes
-        children = [c for c in LOCC_HIERARCHY.keys() if len(c) == 1 and c.isalpha()]
+        top_items = sorted(LOCC_TOP, key=lambda x: x['code'])
         return [
             {
-                'code': code,
-                'label': LOCC_HIERARCHY[code],
-                'has_children': any(c.startswith(code) and c != code for c in LOCC_HIERARCHY.keys())
+                'code': item['code'],
+                'label': item['label'],
+                'has_children': any(c.startswith(item['code']) and c != item['code'] for c in LOCC_HIERARCHY.keys())
             }
-            for code in sorted(children)
+            for item in top_items
         ]
-    
-    # Extract letter prefix from parent
-    parent_match = re.match(r'^([A-Z]+)', parent)
-    if not parent_match:
+
+    if parent not in LOCC_HIERARCHY:
         return []
-    
-    parent_letters = parent_match.group(1)
-    parent_has_numbers = len(parent) > len(parent_letters)
-    
-    # Find all candidates that start with parent but aren't the parent itself
-    candidates = [c for c in LOCC_HIERARCHY.keys() if c.startswith(parent) and c != parent]
-    
-    if not candidates:
-        return []  # Leaf node - no children
-    
-    children = set()
-    
-    for code in candidates:
-        # Extract letter prefix from this code
-        code_match = re.match(r'^([A-Z]+)', code)
-        if not code_match:
-            continue
-        
-        code_letters = code_match.group(1)
-        code_has_numbers = len(code) > len(code_letters)
-        
-        if parent_has_numbers:
-            # Parent has numbers (e.g., E011) - not typical, but handle it
-            # Direct children would be longer numbered codes
-            children.add(code)
-        elif len(parent_letters) == 1:
-            # Parent is a single letter (e.g., A, B, E)
-            if not code_has_numbers:
-                # Two-letter codes are immediate children (e.g., AC, AE under A)
-                if len(code_letters) == 2 and code_letters.startswith(parent):
-                    children.add(code)
-            else:
-                # Numbered codes: only add if letter prefix matches exactly
-                # E.g., E011 is under E, not EA
-                if code_letters == parent:
-                    children.add(code)
-        else:
-            # Parent is a multi-letter code (e.g., AC, DJK)
-            if not code_has_numbers:
-                # Longer letter codes are children (e.g., DJK under D if DJ doesn't exist)
-                if code_letters.startswith(parent_letters) and len(code_letters) == len(parent_letters) + 1:
-                    children.add(code)
-            else:
-                # Numbered codes under this letter prefix
-                if code_letters == parent_letters:
-                    children.add(code)
-    
-    # For numbered codes, filter to only show "top-level" numbered codes
-    # (i.e., don't show F350.5 if we should show F350 first)
-    numbered_children = [c for c in children if any(ch.isdigit() for ch in c)]
-    if numbered_children:
-        # Sort by length, then alphabetically
-        numbered_children.sort(key=lambda x: (len(x), x))
-        # Keep only those that aren't prefixed by another numbered child
-        filtered_numbered = []
-        for code in numbered_children:
-            is_sub = False
-            for other in numbered_children:
-                if other != code and code.startswith(other):
-                    is_sub = True
-                    break
-            if not is_sub:
-                filtered_numbered.append(code)
-        # Replace numbered children with filtered set
-        children = {c for c in children if not any(ch.isdigit() for ch in c)}
-        children.update(filtered_numbered)
-    
-    # Build result with has_children flag
+
+    children_keys = [c for c in LOCC_HIERARCHY.keys() if c.startswith(parent) and c != parent]
     result = []
-    for code in sorted(children, key=lambda x: (len(x), x)):
-        has_children = any(c.startswith(code) and c != code for c in LOCC_HIERARCHY.keys())
+    for code in sorted(children_keys, key=lambda x: (len(x), x)):
+        has_children = any(k.startswith(code) and k != code for k in LOCC_HIERARCHY.keys())
         result.append({
             'code': code,
             'label': LOCC_HIERARCHY.get(code, code),
             'has_children': has_children
         })
-    
     return result
-
-
-def get_locc_path(code: str) -> list[dict]:
-    """
-    Get the path from root to a LOCC code (breadcrumb navigation).
-    
-    Args:
-        code: LOCC code
-        
-    Returns:
-        List of dicts with 'code' and 'label' from root to the given code
-    """
-    code = (code or "").strip().upper()
-    if not code:
-        return []
-    
-    path = []
-    
-    # Extract letter prefix
-    match = re.match(r'^([A-Z]+)', code)
-    if not match:
-        return []
-    
-    letters = match.group(1)
-    
-    # Add single letter (top level) if it exists
-    if letters[0] in LOCC_HIERARCHY:
-        path.append({'code': letters[0], 'label': LOCC_HIERARCHY[letters[0]]})
-    
-    # Add intermediate letter codes (two-letter, three-letter, etc.)
-    for i in range(2, len(letters) + 1):
-        prefix = letters[:i]
-        if prefix in LOCC_HIERARCHY:
-            path.append({'code': prefix, 'label': LOCC_HIERARCHY[prefix]})
-    
-    # Add the full code if it has numbers and is different from the letter-only path
-    if code != letters and code in LOCC_HIERARCHY:
-        path.append({'code': code, 'label': LOCC_HIERARCHY[code]})
-    elif code not in LOCC_HIERARCHY and letters in LOCC_HIERARCHY:
-        # Code not in hierarchy but letters are - still valid for books
-        # Add the code itself as the final path element
-        path.append({'code': code, 'label': code})
-    
-    return path
-
-
-def get_broad_genres(session=None) -> list[dict]:
-    """
-    Get broad genres (top-level LoCC) with book counts from base tables.
-    
-    Args:
-        session: Optional SQLAlchemy session. If not provided, creates a temporary one.
-    
-    Returns:
-        List of dicts with 'code', 'label', and 'book_count' keys
-        
-    Note: Uses base tables (loccs, mn_books_loccs) directly for accurate counts.
-    """
-    # Query base tables for accurate counts by top-level LoCC
-    sql = """
-        SELECT 
-            SUBSTRING(lc.pk FROM 1 FOR 1) AS broad_genre,
-            COUNT(DISTINCT mblc.fk_books) AS book_count
-        FROM loccs lc
-        JOIN mn_books_loccs mblc ON lc.pk = mblc.fk_loccs
-        GROUP BY SUBSTRING(lc.pk FROM 1 FOR 1)
-        ORDER BY broad_genre
-    """
-    
-    # Use provided session or create a temporary one
-    if session is not None:
-        rows = session.execute(text(sql)).fetchall()
-    else:
-        # Create a temporary connection using module-level config
-        cfg = Config()
-        engine = create_engine(
-            f"postgresql://{cfg.PGUSER}@{cfg.PGHOST}:{cfg.PGPORT}/{cfg.PGDATABASE}",
-            pool_pre_ping=True,
-        )
-        Session = sessionmaker(bind=engine)
-        with Session() as temp_session:
-            rows = temp_session.execute(text(sql)).fetchall()
-    
-    # Map to our labels
-    result = []
-    for row in rows:
-        code = row.broad_genre
-        if code in LOCC_HIERARCHY:
-            result.append({
-                'code': code,
-                'label': LOCC_HIERARCHY[code],
-                'book_count': row.book_count
-            })
-    
-    return result
-
 
 # =============================================================================
 # Enums
@@ -980,23 +293,20 @@ _OPDS_FILETYPES = {
     "index",         # Audiobook HTML index
 }
 
-
 # =============================================================================
 # Formatting Helpers (based on libgutenberg.DublinCore)
 # =============================================================================
 
-# Pre-compiled regexes for performance (O(1) lookup, avoid re-compiling)
 _RE_MARC_SUBFIELD = re.compile(r"\$[a-z]")
 _RE_MARC_SPSEP = re.compile(r"[\n ](,|:)([A-Za-z0-9])")
 _RE_CURLY_SINGLE = re.compile("[\u2018\u2019]")  # ' '
 _RE_CURLY_DOUBLE = re.compile("[\u201c\u201d]")  # " "
 _RE_TITLE_SPLITTER = re.compile(r"\s*[;:]\s*")
 
-# O(1) lookups for field classification
 _TITLE_FIELDS = frozenset({"title", "subtitle", "alt_title"})
 _STRIP_FIELDS = frozenset({
     "author", "name", "publisher", "subject", "bookshelf",
-    "subjects", "bookshelves",  # Plural forms for list items
+    "subjects", "bookshelves",  
 })
 
 
@@ -1302,12 +612,6 @@ class SearchQuery:
         else:
             self._page = max(1, int(key))
         return self
-    
-    def __len__(self) -> int:
-        return len(self._search) + len(self._filter)
-    
-    def __bool__(self) -> bool:
-        return bool(self._search or self._filter)
     
     # === Configuration ===
     
@@ -1774,63 +1078,6 @@ class FullTextSearch:
         with self.Session() as session:
             rows = session.execute(text(sql), params).fetchall()
             return [{'id': r.id, 'name': r.name, 'count': r.count} for r in rows]
-    
-    def get_books_by_locc(self, locc_code: str, page: int = 1, page_size: int = 28, crosswalk: Crosswalk = Crosswalk.OPDS) -> dict:
-        """
-        Get books filtered by a specific LOCC code.
-        
-        Args:
-            locc_code: LOCC code to filter by
-            page: Page number (1-indexed)
-            page_size: Results per page
-            crosswalk: Output format
-            
-        Returns:
-            Paginated results dict
-        """
-        q = self.query(crosswalk)
-        q.locc(locc_code)
-        q.order_by(OrderBy.DOWNLOADS)
-        q[page, page_size]
-        return self.execute(q)
-    
-    def get_books_by_bookshelf(self, bookshelf_id: int, page: int = 1, page_size: int = 28, crosswalk: Crosswalk = Crosswalk.OPDS) -> dict:
-        """
-        Get books in a specific bookshelf.
-        
-        Args:
-            bookshelf_id: Bookshelf primary key
-            page: Page number (1-indexed)
-            page_size: Results per page
-            crosswalk: Output format
-            
-        Returns:
-            Paginated results dict
-        """
-        q = self.query(crosswalk)
-        q.bookshelf_id(bookshelf_id)
-        q.order_by(OrderBy.DOWNLOADS)
-        q[page, page_size]
-        return self.execute(q)
-    
-    def get_books_by_subject(self, subject_id: int, page: int = 1, page_size: int = 28, crosswalk: Crosswalk = Crosswalk.OPDS) -> dict:
-        """
-        Get books with a specific subject.
-        
-        Args:
-            subject_id: Subject primary key
-            page: Page number (1-indexed)
-            page_size: Results per page
-            crosswalk: Output format
-            
-        Returns:
-            Paginated results dict
-        """
-        q = self.query(crosswalk)
-        q.subject_id(subject_id)
-        q.order_by(OrderBy.DOWNLOADS)
-        q[page, page_size]
-        return self.execute(q)
     
     def get_bookshelf_samples_batch(self, bookshelf_ids: list[int], sample_limit: int = 20, crosswalk: Crosswalk = Crosswalk.OPDS) -> dict[int, dict]:
         """

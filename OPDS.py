@@ -3,18 +3,12 @@ import cherrypy
 from urllib.parse import quote, unquote, urlencode
 from FullTextSearch import (
     FullTextSearch, SearchField, SearchType, OrderBy, SortDirection, Crosswalk,
-    LANGUAGE_LIST, LOCC_LIST, LOCC_HIERARCHY, CURATED_BOOKSHELVES,
+    LANGUAGE_LIST, LOCC_TOP, LOCC_HIERARCHY, CURATED_BOOKSHELVES,
     get_locc_children, get_locc_path, get_broad_genres
 )
 
-# Valid sort values (subset of OrderBy enum, excludes RELEVANCE which is default)
-_VALID_SORTS = {OrderBy.DOWNLOADS.value, OrderBy.TITLE.value, OrderBy.AUTHOR.value, 
-                OrderBy.RELEASE_DATE.value, OrderBy.RANDOM.value, OrderBy.RELEVANCE.value}
-
-
 def _parse_field(field: str) -> tuple[SearchField, SearchType]:
     """Parse field param to (SearchField, SearchType). Default is fuzzy search."""
-    # Default to fuzzy search unless explicitly using fts_ prefix
     if field.startswith("fts_"):
         search_type = SearchType.FTS
         field_name = field[4:]
@@ -22,7 +16,6 @@ def _parse_field(field: str) -> tuple[SearchField, SearchType]:
         search_type = SearchType.FUZZY
         field_name = field[6:]
     else:
-        # Default: fuzzy search
         search_type = SearchType.FUZZY
         field_name = field
     
@@ -56,7 +49,6 @@ class API:
     @cherrypy.tools.json_out()
     def index(self):
         """Root catalog - groups with featured publications and navigation links."""
-        # Build navigation: Search options first, then LoCC, then sort options
         navigation = [
             {
                 "href": "/opds/search?field=fuzzy_keyword",
@@ -217,7 +209,7 @@ class API:
                 q.text_only()
             
             # Apply sorting
-            if sort in _VALID_SORTS:
+            if sort in OrderBy._value2member_map_:
                 direction = SortDirection.ASC if sort_order == "asc" else SortDirection.DESC if sort_order == "desc" else None
                 q.order_by(OrderBy(sort), direction)
             elif query.strip():
@@ -366,7 +358,7 @@ class API:
                     q.text_only()
                 
                 # Apply sorting
-                if sort in _VALID_SORTS:
+                if sort in OrderBy._value2member_map_:
                     direction = SortDirection.ASC if sort_order == "asc" else SortDirection.DESC if sort_order == "desc" else None
                     q.order_by(OrderBy(sort), direction)
                 elif query.strip():
@@ -1029,7 +1021,7 @@ class API:
             "metadata": {"title": "Broad Genre"},
             "links": [_facet_link(url(query, 1, limit, field, lang, copyrighted, audiobook, sort, sort_order, ""), "Any", not locc)] + [
                 _facet_link(url(query, 1, limit, field, lang, copyrighted, audiobook, sort, sort_order, item['code']), item['label'], locc == item['code'])
-                for item in LOCC_LIST
+                for item in LOCC_TOP
             ]
         })
         

@@ -501,8 +501,3 @@ fts = FullTextSearch()                          # Creates engine + session facto
 q = fts.query().search("Shakespeare")[1, 28]    # Builds SearchQuery (no DB hit)
 result = fts.execute(q)                         # Session checks out connection, runs query
 ```
-
-- `FullTextSearch` is thread-safe (stateless, holds only engine/factory)
-- Each `.execute()` call gets its own Session (connection checkout/return)
-- `SearchQuery` is just a builder—no DB access until `.execute()`
-- Connection pool handles concurrent database access
