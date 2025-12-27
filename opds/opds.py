@@ -1,10 +1,13 @@
-"""OPDS 2.0 API for Gutenberg catalog."""
 import cherrypy
 from urllib.parse import quote, unquote, urlencode
-from FullTextSearch import (
-    FullTextSearch, SearchField, SearchType, OrderBy, SortDirection, Crosswalk,
-    LANGUAGE_LIST, LOCC_TOP, LOCC_HIERARCHY, CURATED_BOOKSHELVES,
-    get_locc_children, get_locc_path, get_broad_genres
+from ..search.full_text_search import FullTextSearch, SearchQuery, get_locc_children
+from ..search.constants import (
+    SearchField,
+    SearchType,
+    OrderBy,
+    SortDirection,
+    Crosswalks,
+    CuratedBookshelves,
 )
 
 def _parse_field(field: str) -> tuple[SearchField, SearchType]:
