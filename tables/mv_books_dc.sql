@@ -1,4 +1,3 @@
--- Dublin Core Materialized View
 -- Aligned with libgutenberg DublinCoreMapping.py
 
 BEGIN;

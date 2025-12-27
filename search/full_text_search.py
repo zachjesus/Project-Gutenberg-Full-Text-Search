@@ -39,8 +39,6 @@ class Config:
 
 @dataclass
 class SearchQuery:
-    """Fluent query builder for full-text search."""
-
     _search: list[tuple[str, dict, str]] = field(default_factory=list)
     _filter: list[tuple[str, dict]] = field(default_factory=list)
     _order: OrderBy = OrderBy.RELEVANCE

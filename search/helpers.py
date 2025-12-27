@@ -131,10 +131,10 @@ def get_locc_children(parent: LoCCMainClass | str) -> list[dict]:
         parent = parent.code
     else:
         parent = (parent or "").strip().upper()
-        
+
     engine = create_engine(
         f"postgresql://{Config.PGUSER}@{Config.PGHOST}:{Config.PGPORT}/{Config.PGDATABASE}"
-    )
+    )  # fix have fts.py provide engine/session.
 
     if not parent:
         sorted_classes = sorted(LoCCMainClass, key=lambda x: x.code)
@@ -156,7 +156,11 @@ def get_locc_children(parent: LoCCMainClass | str) -> list[dict]:
             ORDER BY char_length(lc.pk), lc.pk
             """
         )
-        rows = conn.execute(sql, {"pattern": f"{parent}%", "parent": parent}).mappings().all()
+        rows = (
+            conn.execute(sql, {"pattern": f"{parent}%", "parent": parent})
+            .mappings()
+            .all()
+        )
     finally:
         conn.close()
 
