@@ -3,8 +3,8 @@ from functools import wraps
 from typing import Any, Callable
 
 from constants import LoCCMainClass
-from full_text_search import Config
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 _RE_MARC_SUBFIELD = re.compile(r"\$[a-z]")
 _RE_MARC_SPSEP = re.compile(r"[\n ](,|:)([A-Za-z0-9])")
@@ -29,7 +29,7 @@ _FIELDS_TO_FORMAT = frozenset(
 )
 
 
-def _strip_marc_subfields(text: str) -> str:
+def strip_marc_subfields(text: str) -> str:
     """
     Based on libgutenberg.DublinCore.strip_marc_subfields.
     """
@@ -40,7 +40,7 @@ def _strip_marc_subfields(text: str) -> str:
     return text.strip()
 
 
-def _normalize_text(text: str) -> str:
+def normalize_text(text: str) -> str:
     """
     Based on libgutenberg.DublinCore.format_title.
     """
@@ -52,43 +52,43 @@ def _normalize_text(text: str) -> str:
     return text.rstrip(": ").strip()
 
 
-def _format_field(
+def format_field(
     key: str, value: str, fields_to_format: frozenset = _FIELDS_TO_FORMAT
 ) -> str:
     if not value or not isinstance(value, str):
         return ""
     text = value
     if key in fields_to_format:
-        text = _strip_marc_subfields(text)
-        text = _normalize_text(text)
+        text = strip_marc_subfields(text)
+        text = normalize_text(text)
     return text.strip()
 
 
-def _format_dict(d: dict, fields_to_format: frozenset = _FIELDS_TO_FORMAT) -> dict:
+def format_dict(d: dict, fields_to_format: frozenset = _FIELDS_TO_FORMAT) -> dict:
     result = {}
     for key, value in d.items():
         if isinstance(value, str):
-            result[key] = _format_field(key, value, fields_to_format)
+            result[key] = format_field(key, value, fields_to_format)
         elif isinstance(value, dict):
-            result[key] = _format_dict(value, fields_to_format)
+            result[key] = format_dict(value, fields_to_format)
         elif isinstance(value, list):
-            result[key] = _format_list(key, value, fields_to_format)
+            result[key] = format_list(key, value, fields_to_format)
         else:
             result[key] = value
     return result
 
 
-def _format_list(
+def format_list(
     parent_key: str, lst: list, fields_to_format: frozenset = _FIELDS_TO_FORMAT
 ) -> list:
     result = []
     for item in lst:
         if isinstance(item, dict):
-            result.append(_format_dict(item, fields_to_format))
+            result.append(format_dict(item, fields_to_format))
         elif isinstance(item, str):
-            result.append(_format_field(parent_key, item, fields_to_format))
+            result.append(format_field(parent_key, item, fields_to_format))
         elif isinstance(item, list):
-            result.append(_format_list(parent_key, item, fields_to_format))
+            result.append(format_list(parent_key, item, fields_to_format))
         else:
             result.append(item)
     return result
@@ -116,7 +116,7 @@ def format_dict_result(
         def wrapper(*args, **kwargs) -> Any:
             result = func(*args, **kwargs)
             if isinstance(result, dict):
-                return _format_dict(result, fields_fs)
+                return format_dict(result, fields_fs)
             return result
 
         return wrapper
@@ -126,15 +126,14 @@ def format_dict_result(
     return decorator(fn)
 
 
-def get_locc_children(parent: LoCCMainClass | str) -> list[dict]:
+def get_locc_children(parent: LoCCMainClass | str, session: Session) -> list[dict]:
+    """
+    Get LoCC children for `parent` using the provided SQLAlchemy ORM Session.
+    """
     if isinstance(parent, LoCCMainClass):
         parent = parent.code
     else:
         parent = (parent or "").strip().upper()
-
-    engine = create_engine(
-        f"postgresql://{Config.PGUSER}@{Config.PGHOST}:{Config.PGPORT}/{Config.PGDATABASE}"
-    )  # fix have fts.py provide engine/session.
 
     if not parent:
         sorted_classes = sorted(LoCCMainClass, key=lambda x: x.code)
@@ -143,26 +142,20 @@ def get_locc_children(parent: LoCCMainClass | str) -> list[dict]:
             for item in sorted_classes
         ]
 
-    conn = engine.connect()
-    try:
-        sql = text(
-            """
-            SELECT lc.pk AS code, lc.label AS label,
-                    EXISTS (
-                        SELECT 1 FROM loccs lc2 WHERE lc2.pk LIKE lc.pk || '%' AND lc2.pk != lc.pk
-                    ) AS has_children
-            FROM loccs lc
-            WHERE lc.pk LIKE :pattern AND lc.pk != :parent
-            ORDER BY char_length(lc.pk), lc.pk
-            """
-        )
-        rows = (
-            conn.execute(sql, {"pattern": f"{parent}%", "parent": parent})
-            .mappings()
-            .all()
-        )
-    finally:
-        conn.close()
+    sql = text(
+        """
+        SELECT lc.pk AS code, lc.label AS label,
+                EXISTS (
+                    SELECT 1 FROM loccs lc2 WHERE lc2.pk LIKE lc.pk || '%' AND lc2.pk != lc.pk
+                ) AS has_children
+        FROM loccs lc
+        WHERE lc.pk LIKE :pattern AND lc.pk != :parent
+        ORDER BY char_length(lc.pk), lc.pk
+        """
+    )
+
+    params = {"pattern": f"{parent}%", "parent": parent}
+    rows = session.execute(sql, params).mappings().all()
 
     return [
         {

@@ -1,18 +1,16 @@
-"""Test all FullTextSearch methods."""
-
 import time
 
-from FullTextSearch import (
+from constants import (
     Crosswalk,
     Encoding,
     FileType,
-    FullTextSearch,
-    LanguageCode,
-    LoccClass,
+    Language,
+    LoCCMainClass,
     OrderBy,
     SearchField,
     SearchType,
 )
+from full_text_search import FullTextSearch
 
 s = FullTextSearch()
 
@@ -27,7 +25,10 @@ def test(name: str, q):
         first = data["results"][0] if data["results"] else None
         if first:
             title = first.get("title", first.get("name", "N/A"))[:40]
-            author = first.get("author", "Unknown") or "Unknown"
+            # crosswalks may provide different author keys; try common ones
+            author = (
+                first.get("author", first.get("all_authors", "Unknown")) or "Unknown"
+            )
             author = author[:25]
         else:
             title, author = "N/A", "N/A"
@@ -81,7 +82,6 @@ test(
     "FUZZY BOOKSHELF",
     s.query().search("Scince Ficton", SearchField.BOOKSHELF, SearchType.FUZZY)[1, 10],
 )
-# FUZZY ATTRIBUTE removed - no trigram index, falls back to FTS
 
 # === Search: CONTAINS (fields with trigram indexes) ===
 print("-" * 130)
@@ -111,7 +111,6 @@ test(
     "CONTAINS BOOKSHELF",
     s.query().search("Fiction", SearchField.BOOKSHELF, SearchType.CONTAINS)[1, 10],
 )
-# CONTAINS ATTRIBUTE removed - no trigram index, falls back to FTS
 
 # === Filters: PK ===
 print("-" * 130)
@@ -144,9 +143,9 @@ test("released_before()", s.query().released_before("2000-01-01")[1, 10])
 print("-" * 130)
 print("Filters: GIN Array / JSONB")
 print("-" * 130)
-test("lang()", s.query().lang(LanguageCode.DE)[1, 10])
-test("locc()", s.query().locc(LoccClass.P)[1, 10])
-test("has_contributor()", s.query().has_contributor("Illustrator")[1, 10])
+test("lang()", s.query().lang(Language.DE)[1, 10])
+test("locc()", s.query().locc(LoCCMainClass.P)[1, 10])
+test("contributor_role()", s.query().contributor_role("Illustrator")[1, 10])
 test("file_type() EPUB", s.query().file_type(FileType.EPUB)[1, 10])
 test("file_type() PDF", s.query().file_type(FileType.PDF)[1, 10])
 test("file_type() TXT", s.query().file_type(FileType.TXT)[1, 10])
@@ -221,7 +220,7 @@ print("Combined Filters")
 print("-" * 130)
 test(
     "FTS + lang + public_domain",
-    s.query().search("Adventure").lang(LanguageCode.EN).public_domain()[1, 10],
+    s.query().search("Adventure").lang(Language.EN).public_domain()[1, 10],
 )
 test("FTS + file_type", s.query().search("Novel").file_type(FileType.EPUB)[1, 10])
 test(
@@ -233,9 +232,9 @@ test(
 test("author_id + file_type", s.query().author_id(53).file_type(FileType.TXT)[1, 10])
 test(
     "FTS BOOKSHELF + lang",
-    s.query().search("Mystery", SearchField.BOOKSHELF).lang(LanguageCode.EN)[1, 10],
+    s.query().search("Mystery", SearchField.BOOKSHELF).lang(Language.EN)[1, 10],
 )
-test("locc + public_domain", s.query().locc(LoccClass.P).public_domain()[1, 10])
+test("locc + public_domain", s.query().locc(LoCCMainClass.P).public_domain()[1, 10])
 
 # === Crosswalk Formats ===
 print("-" * 130)
@@ -280,39 +279,10 @@ test("page 1", s.query().search("Novel")[1, 5])
 test("page 2", s.query().search("Novel")[2, 5])
 test("page 3", s.query().search("Novel")[3, 5])
 
-# === Direct Methods ===
+# === Count-only ===
 print("-" * 130)
-print("Direct Methods")
+print("Count-only")
 print("-" * 130)
-
-start = time.perf_counter()
-book = s.get(1342)
-ms = (time.perf_counter() - start) * 1000
-print(
-    f"{'get(1342)':<50} | {'1':>6} | {ms:>7.1f}ms | {book['title'][:40]} - {(book['author'] or 'Unknown')[:25]}"
-)
-
-start = time.perf_counter()
-book_mini = s.get(1342, Crosswalk.MINI)
-ms = (time.perf_counter() - start) * 1000
-print(
-    f"{'get(1342, Crosswalk.MINI)':<50} | {'1':>6} | {ms:>7.1f}ms | keys: {list(book_mini.keys())}"
-)
-
-start = time.perf_counter()
-book_pg = s.get(1342, Crosswalk.PG)
-ms = (time.perf_counter() - start) * 1000
-print(
-    f"{'get(1342, Crosswalk.PG)':<50} | {'1':>6} | {ms:>7.1f}ms | ebook_no: {book_pg.get('ebook_no')}, files: {len(book_pg.get('files', []))}"
-)
-
-start = time.perf_counter()
-books = s.get_many([1342, 84, 11])
-ms = (time.perf_counter() - start) * 1000
-print(
-    f"{'get_many([1342, 84, 11])':<50} | {len(books):>6} | {ms:>7.1f}ms | {books[0]['title'][:40]}"
-)
-
 start = time.perf_counter()
 count = s.count(s.query().search("Shakespeare"))
 ms = (time.perf_counter() - start) * 1000
@@ -338,15 +308,6 @@ data = s.execute(s.query(Crosswalk.CUSTOM).search("Shakespeare")[1, 5])
 ms = (time.perf_counter() - start) * 1000
 first = data["results"][0] if data["results"] else {}
 print(f"{'Crosswalk.CUSTOM':<50} | {data['total']:>6} | {ms:>7.1f}ms | {first}")
-
-# === Dunder Methods ===
-print("-" * 130)
-print("Dunder Methods")
-print("-" * 130)
-q = s.query().search("Shakespeare").lang(LanguageCode.EN)
-print(f"len(q) = {len(q)} (1 search + 1 filter)")
-print(f"bool(q) = {bool(q)}")
-print(f"bool(s.query()) = {bool(s.query())} (empty query)")
 
 print("=" * 130)
 print("All tests complete!")

@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Callable, Tuple, Union
 
 from constants import (
     Crosswalk,
     Encoding,
     FileType,
     Language,
+    LoCCMainClass,
     OrderBy,
     SearchField,
     SearchType,
     SortDirection,
 )
 from crosswalks import CROSSWALK_MAP
+from helpers import get_locc_children
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
@@ -68,8 +70,9 @@ class SearchQuery:
     _order: OrderBy = OrderBy.DOWNLOADS
     _sort_dir: SortDirection | None = None
     _page: int = 1
-    _page_size: int = 28
+    _page_size: int = 25
     _crosswalk: Crosswalk = Crosswalk.PG
+    _param_counter: int = 0
 
     def __getitem__(self, key: int | tuple) -> SearchQuery:
         """Set pagination: q[3] for page 3, q[2, 50] for page 2 with 50 results."""
@@ -91,6 +94,33 @@ class SearchQuery:
         self._sort_dir = direction
         return self
 
+    def _new_param(self, value: object, wrap_percent: bool = False) -> tuple[str, dict]:
+        pname = f"__p{self._param_counter}"
+        self._param_counter += 1
+        if wrap_percent and isinstance(value, str):
+            value = f"%{value}%"
+        return pname, {pname: value}
+
+    def add_filter(
+        self,
+        sql_template: str,
+        *values: Union[object, Tuple[object, bool]],
+        wrap_percent: bool = False,
+    ) -> "SearchQuery":
+        params: dict = {}
+        placeholders: list[str] = []
+        for v in values:
+            if isinstance(v, tuple) and len(v) >= 2 and isinstance(v[1], bool):
+                val, local_wrap = v[0], v[1]
+            else:
+                val, local_wrap = v, False
+            pname, p = self._new_param(val, wrap_percent=(local_wrap or wrap_percent))
+            params.update(p)
+            placeholders.append(f":{pname}")
+        sql = sql_template.format(*placeholders)
+        self._filter.append((sql, params))
+        return self
+
     def search(
         self,
         txt: str,
@@ -104,31 +134,30 @@ class SearchQuery:
         fts_col, text_col = _FIELD_COLS[field]
 
         if search_type == SearchType.FTS:
-            sql = f"{fts_col} @@ websearch_to_tsquery('english', :q)"
-            self._search.append((sql, {"q": txt}, fts_col))
+            pname, p = self._new_param(txt)
+            sql = f"{fts_col} @@ websearch_to_tsquery('english', :{pname})"
+            self._search.append((sql, p, fts_col))
         elif search_type == SearchType.FUZZY:
-            self._search.append((f":q <% {text_col}", {"q": txt}, text_col))
+            pname, p = self._new_param(txt)
+            self._search.append((f":{pname} <% {text_col}", p, text_col))
         else:
-            self._search.append((f"{text_col} ILIKE :q", {"q": f"%{txt}%"}, text_col))
+            pname, p = self._new_param(txt, wrap_percent=True)
+            self._search.append((f"{text_col} ILIKE :{pname}", p, text_col))
         return self
 
     # Filter Methods
 
     def etext(self, nr: int) -> SearchQuery:
-        self._filter.append(("book_id = :id", {"id": int(nr)}))
-        return self
+        return self.add_filter("book_id = {}", int(nr))
 
     def etexts(self, nrs: list[int]) -> SearchQuery:
-        self._filter.append(("book_id = ANY(:ids)", {"ids": [int(n) for n in nrs]}))
-        return self
+        return self.add_filter("book_id = ANY({})", [int(n) for n in nrs])
 
     def downloads_gte(self, n: int) -> SearchQuery:
-        self._filter.append(("downloads >= :dl", {"dl": int(n)}))
-        return self
+        return self.add_filter("downloads >= {}", int(n))
 
     def downloads_lte(self, n: int) -> SearchQuery:
-        self._filter.append(("downloads <= :dl", {"dl": int(n)}))
-        return self
+        return self.add_filter("downloads <= {}", int(n))
 
     def public_domain(self) -> SearchQuery:
         self._filter.append(("copyrighted = 0", {}))
@@ -138,15 +167,12 @@ class SearchQuery:
         self._filter.append(("copyrighted = 1", {}))
         return self
 
-    def lang(self, code: str | Language) -> SearchQuery:
+    def lang(self, code: Language | str) -> SearchQuery:
         if isinstance(code, Language):
             code_val = code.code
         else:
             code_val = code.lower()
-        self._filter.append(
-            ("lang_codes @> ARRAY[CAST(:lang AS text)]", {"lang": code_val})
-        )
-        return self
+        return self.add_filter("lang_codes @> ARRAY[CAST({} AS text)]", code_val)
 
     def text_only(self) -> SearchQuery:
         self._filter.append(("is_audio = false", {}))
@@ -157,96 +183,87 @@ class SearchQuery:
         return self
 
     def author_born_after(self, year: int) -> SearchQuery:
-        self._filter.append(("max_author_birthyear >= :y", {"y": int(year)}))
-        return self
+        return self.add_filter("max_author_birthyear >= {}", int(year))
 
     def author_born_before(self, year: int) -> SearchQuery:
-        self._filter.append(("min_author_birthyear <= :y", {"y": int(year)}))
-        return self
+        return self.add_filter("min_author_birthyear <= {}", int(year))
 
     def author_died_after(self, year: int) -> SearchQuery:
-        self._filter.append(("max_author_deathyear >= :y", {"y": int(year)}))
-        return self
+        return self.add_filter("max_author_deathyear >= {}", int(year))
 
     def author_died_before(self, year: int) -> SearchQuery:
-        self._filter.append(("min_author_deathyear <= :y", {"y": int(year)}))
-        return self
+        return self.add_filter("min_author_deathyear <= {}", int(year))
 
     def released_after(self, date: str) -> SearchQuery:
-        self._filter.append(("release_date >= CAST(:d AS date)", {"d": str(date)}))
-        return self
+        return self.add_filter("release_date >= CAST({} AS date)", str(date))
 
     def released_before(self, date: str) -> SearchQuery:
-        self._filter.append(("release_date <= CAST(:d AS date)", {"d": str(date)}))
-        return self
+        return self.add_filter("release_date <= CAST({} AS date)", str(date))
 
-    def locc(self, code: str) -> SearchQuery:
-        self._filter.append(
-            (
-                "EXISTS (SELECT 1 FROM mn_books_loccs mbl JOIN loccs lc ON lc.pk = mbl.fk_loccs WHERE mbl.fk_books = book_id AND lc.pk LIKE :locc_pattern)",
-                {"locc_pattern": f"{code}%"},
-            )
+    def locc(self, code: LoCCMainClass | str) -> SearchQuery:
+        if isinstance(code, LoCCMainClass):
+            code = code.code
+        else:
+            code = str(code).upper()
+        
+        return self.add_filter(
+            "EXISTS (SELECT 1 FROM mn_books_loccs mbl JOIN loccs lc ON lc.pk = mbl.fk_loccs WHERE mbl.fk_books = book_id AND lc.pk LIKE {})",
+            f"{code}%",
         )
-        return self
 
-    def has_contributor(self, role: str) -> SearchQuery:
-        self._filter.append(
-            ("dc->'creators' @> CAST(:j AS jsonb)", {"j": f'[{{"role":"{role}"}}]'})
+    def contributor_role(self, role: str) -> SearchQuery:
+        return self.add_filter(
+            "dc->'creators' @> CAST({} AS jsonb)", f'[{{"role":"{role}"}}]'
         )
-        return self
 
-    def file_type(self, ft: FileType) -> SearchQuery:
-        self._filter.append(
-            (
-                "dc->'format' @> CAST(:ft AS jsonb)",
-                {"ft": f'[{{"mediatype":"{ft.value}"}}]'},
-            )
+    def file_type(self, ft: FileType | str) -> SearchQuery:
+        if isinstance(ft, FileType):
+            ft_value = ft.value
+        else:
+            ft_value = str(ft)
+        return self.add_filter(
+            "dc->'format' @> CAST({} AS jsonb)", f'[{{"mediatype":"{ft_value}"}}]'
         )
-        return self
 
     def author_id(self, aid: int) -> SearchQuery:
-        self._filter.append(
-            ("dc->'creators' @> CAST(:aid AS jsonb)", {"aid": f'[{{"id":{int(aid)}}}]'})
+        return self.add_filter(
+            "dc->'creators' @> CAST({} AS jsonb)", f'[{{"id":{int(aid)}}}]'
         )
-        return self
 
     def subject_id(self, sid: int) -> SearchQuery:
-        """Filter by subject ID using MN table for fast indexed lookup."""
-        self._filter.append(
-            (
-                "EXISTS (SELECT 1 FROM mn_books_subjects mbs WHERE mbs.fk_books = book_id AND mbs.fk_subjects = :sid)",
-                {"sid": int(sid)},
-            )
+        return self.add_filter(
+            "EXISTS (SELECT 1 FROM mn_books_subjects mbs WHERE mbs.fk_books = book_id AND mbs.fk_subjects = {})",
+            int(sid),
         )
-        return self
 
     def bookshelf_id(self, bid: int) -> SearchQuery:
-        """Filter by bookshelf ID using MN table for fast indexed lookup."""
-        self._filter.append(
-            (
-                "EXISTS (SELECT 1 FROM mn_books_bookshelves mbb WHERE mbb.fk_books = book_id AND mbb.fk_bookshelves = :bid)",
-                {"bid": int(bid)},
-            )
+        return self.add_filter(
+            "EXISTS (SELECT 1 FROM mn_books_bookshelves mbb WHERE mbb.fk_books = book_id AND mbb.fk_bookshelves = {})",
+            int(bid),
         )
-        return self
 
-    def encoding(self, enc: Encoding) -> SearchQuery:
-        self._filter.append(
-            (
-                "dc->'format' @> CAST(:enc AS jsonb)",
-                {"enc": f'[{{"encoding":"{enc.value}"}}]'},
-            )
+    def encoding(self, enc: Encoding | str) -> SearchQuery:
+        if isinstance(enc, Encoding):
+            enc_val = enc.value
+        else:
+            enc_val = str(enc)
+        return self.add_filter(
+            "dc->'format' @> CAST({} AS jsonb)", f'[{{"encoding":"{enc_val}"}}]'
         )
-        return self
 
     def where(self, sql: str, **params) -> SearchQuery:
         """Add raw SQL filter condition. BE CAREFUL WHEN USING!"""
+        for k in params.keys():
+            if k.startswith("__p"):
+                raise ValueError(
+                    "Parameter name reserved by search engine: starts with '__p'"
+                )
         self._filter.append((sql, params))
         return self
 
     # === SQL Building ===
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self) -> dict[str, object]:
         params = {}
         for _, p, *_ in self._search:
             params.update(p)
@@ -257,7 +274,8 @@ class SearchQuery:
     def _order_sql(self, params: dict) -> str:
         if self._order == OrderBy.RELEVANCE and self._search:
             sql, p, col = self._search[-1]
-            params["rank_q"] = p["q"].replace("%", "")
+            val = next(iter(p.values())) if p else ""
+            params["rank_q"] = str(val).replace("%", "")
             if "<%" in sql or "ILIKE" in sql:
                 return f"word_similarity(:rank_q, {col}) DESC, downloads DESC"
             return f"ts_rank_cd({col}, websearch_to_tsquery('english', :rank_q)) DESC, downloads DESC"
@@ -473,3 +491,7 @@ class FullTextSearch:
         with self.Session() as session:
             rows = session.execute(text(sql), params).fetchall()
             return [{"id": r.id, "name": r.name, "count": r.count} for r in rows]
+
+    def get_locc_children(self, parent: LoCCMainClass | str) -> list[dict]:
+        with self.Session() as session:
+            return get_locc_children(parent, session)

@@ -206,7 +206,7 @@ q.locc("PS")                     # Optional: narrower LoCC prefix match
 q.author_id(53)                  # Mark Twain
 q.subject_id(1)                  # Uses mn_books_subjects
 q.bookshelf_id(68)               # Uses mn_books_bookshelves
-q.has_contributor("Illustrator")
+q.contributor_role("Illustrator")
 
 # Custom SQL
 q.where("jsonb_array_length(dc->'creators') > :n", n=2)
