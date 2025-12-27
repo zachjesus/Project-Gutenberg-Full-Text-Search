@@ -30,14 +30,14 @@ END $$;
 DROP MATERIALIZED VIEW IF EXISTS mv_books_dc CASCADE;
 
 CREATE MATERIALIZED VIEW mv_books_dc AS
-SELECT 
+SELECT
     b.pk AS book_id,
     b.title,
-    b.tsvec,      
+    b.tsvec,
     b.downloads,
     b.release_date,
     b.copyrighted,
-    
+
     -- All authors sorted by heading then name (pipe-delimited for display)
     (
         SELECT STRING_AGG(au.author, ' | ' ORDER BY mba.heading, au.author)
@@ -45,7 +45,7 @@ SELECT
         JOIN authors au ON mba.fk_authors = au.pk
         WHERE mba.fk_books = b.pk
     ) AS all_authors,
-    
+
     -- All subjects sorted alphabetically (pipe-delimited for display)
     (
         SELECT STRING_AGG(s.subject, ' | ' ORDER BY s.subject)
@@ -53,10 +53,10 @@ SELECT
         JOIN subjects s ON mbs.fk_subjects = s.pk
         WHERE mbs.fk_books = b.pk
     ) AS all_subjects,
-    
+
     -- Combined searchable text: title + all authors + all subjects + all bookshelves
     -- (attributes excluded to reduce size for fuzzy search)
-    CONCAT_WS(' ', 
+    CONCAT_WS(' ',
         b.title,
         (SELECT STRING_AGG(au.author, ' ')
          FROM mn_books_authors mba
@@ -71,7 +71,7 @@ SELECT
          JOIN bookshelves bs ON mbbs.fk_bookshelves = bs.pk
          WHERE mbbs.fk_books = b.pk)
     ) AS book_text,
-    
+
     -- All language codes as array for multi-language filtering
     COALESCE((
         SELECT ARRAY_AGG(DISTINCT l.pk::text)
@@ -79,51 +79,51 @@ SELECT
         JOIN langs l ON mbl.fk_langs = l.pk
         WHERE mbl.fk_books = b.pk
     ), ARRAY['en']::text[]) AS lang_codes,
-    
+
     EXISTS (
         SELECT 1 FROM mn_books_categories mbc
         WHERE mbc.fk_books = b.pk AND mbc.fk_categories IN (1, 2)
     ) AS is_audio,
-    
+
     (
-        SELECT CASE 
-            WHEN a.text LIKE '%$b%' THEN 
+        SELECT CASE
+            WHEN a.text LIKE '%$b%' THEN
                 TRIM(BOTH ' :;,.' FROM SPLIT_PART(SPLIT_PART(a.text, '$b', 2), '$', 1))
             ELSE NULL
         END
-        FROM attributes a 
+        FROM attributes a
         WHERE a.fk_books = b.pk AND a.fk_attriblist = 245
         LIMIT 1
     ) AS subtitle,
-    
+
     (
-        SELECT MAX(au.born_floor) 
+        SELECT MAX(au.born_floor)
         FROM mn_books_authors mba
         JOIN authors au ON mba.fk_authors = au.pk
         WHERE mba.fk_books = b.pk AND au.born_floor > 0
     ) AS max_author_birthyear,
-    
+
     (
-        SELECT MIN(au.born_floor) 
+        SELECT MIN(au.born_floor)
         FROM mn_books_authors mba
         JOIN authors au ON mba.fk_authors = au.pk
         WHERE mba.fk_books = b.pk AND au.born_floor > 0
     ) AS min_author_birthyear,
 
     (
-        SELECT MAX(au.died_floor) 
+        SELECT MAX(au.died_floor)
         FROM mn_books_authors mba
         JOIN authors au ON mba.fk_authors = au.pk
         WHERE mba.fk_books = b.pk AND au.died_floor > 0
     ) AS max_author_deathyear,
-    
+
     (
-        SELECT MIN(au.died_floor) 
+        SELECT MIN(au.died_floor)
         FROM mn_books_authors mba
         JOIN authors au ON mba.fk_authors = au.pk
         WHERE mba.fk_books = b.pk AND au.died_floor > 0
     ) AS min_author_deathyear,
-    
+
     -- LoCC codes as array for fast filtering
     COALESCE((
         SELECT ARRAY_AGG(lc.pk)
@@ -131,7 +131,7 @@ SELECT
         JOIN loccs lc ON mblc.fk_loccs = lc.pk
         WHERE mblc.fk_books = b.pk
     ), ARRAY[]::text[]) AS locc_codes,
-    
+
     -- Reuse existing tsvec from authors table (already indexed there)
     COALESCE((
         SELECT tsvector_agg(au.tsvec)
@@ -139,27 +139,27 @@ SELECT
         JOIN authors au ON mba.fk_authors = au.pk
         WHERE mba.fk_books = b.pk AND au.tsvec IS NOT NULL
     ), ''::tsvector) AS author_tsvec,
-    
+
     COALESCE((
         SELECT tsvector_agg(s.tsvec)
         FROM mn_books_subjects mbs
         JOIN subjects s ON mbs.fk_subjects = s.pk
         WHERE mbs.fk_books = b.pk AND s.tsvec IS NOT NULL
     ), ''::tsvector) AS subject_tsvec,
-    
+
     COALESCE((
         SELECT tsvector_agg(bs.tsvec)
         FROM mn_books_bookshelves mbbs
         JOIN bookshelves bs ON mbbs.fk_bookshelves = bs.pk
         WHERE mbbs.fk_books = b.pk AND bs.tsvec IS NOT NULL
     ), ''::tsvector) AS bookshelf_tsvec,
-    
+
     COALESCE((
         SELECT tsvector_agg(a.tsvec)
         FROM attributes a
         WHERE a.fk_books = b.pk AND a.tsvec IS NOT NULL
     ), ''::tsvector) AS attribute_tsvec,
-    
+
     -- Bookshelf text for fuzzy/contains search
     (
         SELECT STRING_AGG(bs.bookshelf, ' ')
@@ -167,7 +167,7 @@ SELECT
         JOIN bookshelves bs ON mbbs.fk_bookshelves = bs.pk
         WHERE mbbs.fk_books = b.pk
     ) AS bookshelf_text,
-    
+
     -- Attribute text for fuzzy/contains search (all MARC field text)
     -- Strip MARC subfield delimiters ($a, $b, $c, etc.)
     (
@@ -178,17 +178,17 @@ SELECT
         FROM attributes a
         WHERE a.fk_books = b.pk
     ) AS attribute_text,
-    
+
     -- Title tsvec (FTS on title alone)
     to_tsvector('english', COALESCE(b.title, '')) AS title_tsvec,
-    
+
     -- Subtitle tsvec (FTS on subtitle alone)
     to_tsvector('english', COALESCE((
-        SELECT CASE 
+        SELECT CASE
             WHEN a.text LIKE '%$b%' THEN TRIM(SPLIT_PART(a.text, '$b', 2))
             ELSE NULL
         END
-        FROM attributes a 
+        FROM attributes a
         WHERE a.fk_books = b.pk AND a.fk_attriblist = 245
         LIMIT 1
     ), '')) AS subtitle_tsvec,
@@ -200,28 +200,28 @@ SELECT
         'titleData', (
             SELECT jsonb_build_object(
                 'full', a.text,
-                'title', CASE 
+                'title', CASE
                     WHEN a.text LIKE '%$b%' THEN RTRIM(SPLIT_PART(a.text, '$b', 1), ' :')
                     ELSE a.text
                 END,
-                'subtitle', CASE 
+                'subtitle', CASE
                     WHEN a.text LIKE '%$b%' THEN TRIM(SPLIT_PART(a.text, '$b', 2))
                     ELSE NULL
                 END,
                 'nonfiling', a.nonfiling
             )
-            FROM attributes a 
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 245
             LIMIT 1
         ),
         'alternative', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
-            FROM attributes a 
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 246
         ),
         'altTitle', (
-            SELECT a.text 
-            FROM attributes a 
+            SELECT a.text
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 206
             LIMIT 1
         ),
@@ -265,26 +265,26 @@ SELECT
         ), '[]'::jsonb),
         'summary', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
-            FROM attributes a 
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 520
         ),
         'publisher', (
             SELECT jsonb_build_object(
                 'raw', a.text,
-                'place', CASE 
+                'place', CASE
                     WHEN a.text LIKE '%$a%' THEN TRIM(BOTH ' :,.;[]' FROM SPLIT_PART(SPLIT_PART(a.text, '$a', 2), '$', 1))
                     ELSE NULL
                 END,
-                'publisher', CASE 
+                'publisher', CASE
                     WHEN a.text LIKE '%$b%' THEN TRIM(BOTH ' :,.;[]' FROM SPLIT_PART(SPLIT_PART(a.text, '$b', 2), '$', 1))
                     ELSE NULL
                 END,
-                'years', CASE 
+                'years', CASE
                     WHEN a.text LIKE '%$c%' THEN TRIM(SPLIT_PART(SPLIT_PART(a.text, '$c', 2), '$', 1))
                     ELSE NULL
                 END
             )
-            FROM attributes a 
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist IN (260, 264)
             ORDER BY a.fk_attriblist
             LIMIT 1
@@ -315,8 +315,8 @@ SELECT
             )
             FROM files f
             LEFT JOIN filetypes ft ON f.fk_filetypes = ft.pk
-            WHERE f.fk_books = b.pk 
-              AND f.obsoleted = 0 
+            WHERE f.fk_books = b.pk
+              AND f.obsoleted = 0
               AND f.diskstatus = 0
         ), '[]'::jsonb),
         'language', COALESCE((
@@ -329,12 +329,12 @@ SELECT
         ), '[{"code": "en", "name": "English"}]'::jsonb),
         'source', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
-            FROM attributes a 
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 534
         ),
         'relation', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
-            FROM attributes a 
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 787
         ),
         'coverage', COALESCE((
@@ -345,7 +345,7 @@ SELECT
             JOIN loccs lc ON mblc.fk_loccs = lc.pk
             WHERE mblc.fk_books = b.pk
         ), '[]'::jsonb),
-        'rights', CASE 
+        'rights', CASE
             WHEN b.copyrighted = 1 THEN 'Copyrighted. Read the copyright notice inside this book for details.'
             ELSE 'Public domain in the USA.'
         END,
@@ -361,54 +361,54 @@ SELECT
         'credits', (
             SELECT jsonb_agg(
                 TRIM(
-                    CASE 
-                        WHEN a.text ~* '\s*updated?:\s*' 
+                    CASE
+                        WHEN a.text ~* '\s*updated?:\s*'
                         THEN (regexp_split_to_array(a.text, '\s*[Uu][Pp][Dd][Aa][Tt][Ee][Dd]?:\s*'))[1]
                         ELSE a.text
                     END
                 )
                 ORDER BY a.pk
             )
-            FROM attributes a 
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 508
         ),
         'coverpage', (
             SELECT jsonb_agg(a.text ORDER BY a.pk)
-            FROM attributes a 
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 901
         ),
         'downloads', b.downloads,
         'scanUrls', (
-            SELECT a.text 
-            FROM attributes a 
+            SELECT a.text
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 904
             LIMIT 1
         ),
         'requestKey', (
-            SELECT a.text 
-            FROM attributes a 
+            SELECT a.text
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 905
             LIMIT 1
         ),
         'pubInfo906', (
             SELECT jsonb_build_object(
                 'raw', a.text,
-                'firstYear', CASE 
+                'firstYear', CASE
                     WHEN a.text NOT LIKE '%$b%' THEN a.text
                     ELSE SPLIT_PART(a.text, '$b', 1)
                 END,
-                'publisher', CASE 
+                'publisher', CASE
                     WHEN a.text LIKE '%$b%' THEN SPLIT_PART(SPLIT_PART(a.text, '$b', 2), ',', 1)
                     ELSE NULL
                 END
             )
-            FROM attributes a 
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 906
             LIMIT 1
         ),
         'pubCountry', (
-            SELECT a.text 
-            FROM attributes a 
+            SELECT a.text
+            FROM attributes a
             WHERE a.fk_books = b.pk AND a.fk_attriblist = 907
             LIMIT 1
         ),
@@ -426,7 +426,7 @@ SELECT
             JOIN attriblist al ON a.fk_attriblist = al.pk
             WHERE a.fk_books = b.pk
         ), '[]'::jsonb)
-        
+
     ) AS dc
 FROM books b;
 
@@ -507,7 +507,7 @@ BEGIN
     -- Set memory for this session's refresh operation
     SET LOCAL work_mem = '256MB';
     SET LOCAL maintenance_work_mem = '1GB';
-    
+
     REFRESH MATERIALIZED VIEW CONCURRENTLY mv_books_dc;
     ANALYZE mv_books_dc;
 END;
