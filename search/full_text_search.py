@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -24,6 +23,31 @@ __all__ = [
     "SearchQuery",
 ]
 
+_FIELD_COLS = {
+    SearchField.BOOK: ("tsvec", "book_text"),
+    SearchField.TITLE: ("title_tsvec", "title"),
+    SearchField.SUBTITLE: ("subtitle_tsvec", "subtitle"),
+    SearchField.AUTHOR: ("author_tsvec", "all_authors"),
+    SearchField.SUBJECT: ("subject_tsvec", "all_subjects"),
+    SearchField.BOOKSHELF: ("bookshelf_tsvec", "bookshelf_text"),
+    SearchField.ATTRIBUTE: ("attribute_tsvec", "attribute_text"),
+}
+_ORDER_COLUMNS = {
+    OrderBy.DOWNLOADS: ("downloads", SortDirection.DESC, None),
+    OrderBy.TITLE: ("title", SortDirection.ASC, None),
+    OrderBy.AUTHOR: ("all_authors", SortDirection.ASC, "LAST"),
+    OrderBy.RELEASE_DATE: ("release_date", SortDirection.DESC, "LAST"),
+    OrderBy.RANDOM: ("RANDOM()", None, None),
+}
+_SELECT = "book_id, title, all_authors, downloads, dc, is_audio"
+_SUBQUERY = """book_id, title, all_authors, all_subjects, downloads, release_date, dc,
+    copyrighted, lang_codes, is_audio,
+    max_author_birthyear, min_author_birthyear,
+    max_author_deathyear, min_author_deathyear,
+    locc_codes,
+    tsvec, title_tsvec, subtitle_tsvec, author_tsvec, subject_tsvec, bookshelf_tsvec, attribute_tsvec,
+    book_text, bookshelf_text, attribute_text, subtitle"""
+
 
 class Config:
     PGHOST = "localhost"
@@ -41,13 +65,11 @@ class Config:
 class SearchQuery:
     _search: list[tuple[str, dict, str]] = field(default_factory=list)
     _filter: list[tuple[str, dict]] = field(default_factory=list)
-    _order: OrderBy = OrderBy.RELEVANCE
+    _order: OrderBy = OrderBy.DOWNLOADS
     _sort_dir: SortDirection | None = None
     _page: int = 1
     _page_size: int = 28
-    _crosswalk: Crosswalk = Crosswalk.FULL
-
-    # === Magic Methods ===
+    _crosswalk: Crosswalk = Crosswalk.PG
 
     def __getitem__(self, key: int | tuple) -> SearchQuery:
         """Set pagination: q[3] for page 3, q[2, 50] for page 2 with 50 results."""
@@ -57,8 +79,6 @@ class SearchQuery:
         else:
             self._page = max(1, int(key))
         return self
-
-    # === Configuration ===
 
     def crosswalk(self, cw: Crosswalk) -> SearchQuery:
         self._crosswalk = cw
@@ -71,110 +91,28 @@ class SearchQuery:
         self._sort_dir = direction
         return self
 
-    # === Search Methods ===
-
     def search(
         self,
         txt: str,
         field: SearchField = SearchField.BOOK,
         search_type: SearchType = SearchType.FTS,
     ) -> SearchQuery:
-        """
-        Add search condition. Supports:
-
-        FTS mode (default): Uses PostgreSQL websearch_to_tsquery which supports:
-          - "exact phrase" for phrase matching
-          - word1 word2 for AND (default)
-          - word1 or word2 for OR
-          - -word for NOT/exclude
-
-        FUZZY mode: Uses trigram similarity with basic boolean support:
-          - "exact phrase" for exact substring match
-          - word1 word2 for AND (all must match)
-          - -word for NOT/exclude
-
-        CONTAINS mode: Simple ILIKE substring match
-        """
         txt = (txt or "").strip()
         if not txt:
             return self
 
         fts_col, text_col = _FIELD_COLS[field]
-        use_trigram = field in _TRIGRAM_FIELDS
 
-        if search_type == SearchType.FTS or not use_trigram:
-            # websearch_to_tsquery handles "phrases", or, and - natively
+        if search_type == SearchType.FTS:
             sql = f"{fts_col} @@ websearch_to_tsquery('english', :q)"
             self._search.append((sql, {"q": txt}, fts_col))
         elif search_type == SearchType.FUZZY:
-            # Parse query for basic boolean support in fuzzy mode
-            conditions, params = self._parse_fuzzy_query(txt, text_col)
-            if conditions:
-                self._search.append((conditions, params, text_col))
-        else:  # CONTAINS
+            self._search.append((f":q <% {text_col}", {"q": txt}, text_col))
+        else:
             self._search.append((f"{text_col} ILIKE :q", {"q": f"%{txt}%"}, text_col))
         return self
 
-    def _parse_fuzzy_query(self, txt: str, text_col: str) -> tuple[str, dict]:
-        """
-        Parse query string for fuzzy search with basic boolean support.
-
-        Supports:
-          - "exact phrase" → ILIKE exact match
-          - -word → NOT similarity match
-          - word1 word2 → AND (all must fuzzy match)
-        """
-        original_txt = txt  # Keep for ranking
-
-        # Extract quoted phrases
-        phrases = re.findall(r'"([^"]+)"', txt)
-        txt = re.sub(r'"[^"]*"', "", txt)
-
-        # Extract negations
-        negations = re.findall(r"-(\S+)", txt)
-        txt = re.sub(r"-\S+", "", txt)
-
-        # Remaining words (AND logic)
-        words = txt.split()
-
-        conditions = []
-        params = {"q": original_txt}  # Keep original for ranking in _order_sql
-        param_idx = 0
-
-        # Quoted phrases: exact ILIKE match
-        for phrase in phrases:
-            phrase = phrase.strip()
-            if phrase:
-                param_name = f"phrase_{param_idx}"
-                conditions.append(f"{text_col} ILIKE :{param_name}")
-                params[param_name] = f"%{phrase}%"
-                param_idx += 1
-
-        # Regular words: fuzzy similarity (AND)
-        for word in words:
-            word = word.strip()
-            if word and word.lower() not in ("or", "and"):
-                param_name = f"word_{param_idx}"
-                conditions.append(f":{param_name} <% {text_col}")
-                params[param_name] = word
-                param_idx += 1
-
-        # Negations: NOT similarity match
-        for neg in negations:
-            neg = neg.strip()
-            if neg:
-                param_name = f"neg_{param_idx}"
-                conditions.append(f"NOT ({text_col} ILIKE :{param_name})")
-                params[param_name] = f"%{neg}%"
-                param_idx += 1
-
-        if not conditions:
-            # Fallback: simple fuzzy match on original text
-            return f":q <% {text_col}", {"q": original_txt}
-
-        return " AND ".join(conditions), params
-
-    # === Filter Methods ===
+    # Filter Methods
 
     def etext(self, nr: int) -> SearchQuery:
         self._filter.append(("book_id = :id", {"id": int(nr)}))
@@ -201,7 +139,6 @@ class SearchQuery:
         return self
 
     def lang(self, code: str | Language) -> SearchQuery:
-        """Filter by language code (matches any language in multi-language books)."""
         if isinstance(code, Language):
             code_val = code.code
         else:
@@ -377,47 +314,6 @@ class SearchQuery:
 # =============================================================================
 # FullTextSearch
 # =============================================================================
-
-_FIELD_COLS = {
-    SearchField.BOOK: ("tsvec", "book_text"),
-    SearchField.TITLE: ("title_tsvec", "title"),
-    SearchField.SUBTITLE: ("subtitle_tsvec", "subtitle"),
-    SearchField.AUTHOR: ("author_tsvec", "all_authors"),
-    SearchField.SUBJECT: ("subject_tsvec", "all_subjects"),
-    SearchField.BOOKSHELF: ("bookshelf_tsvec", "bookshelf_text"),
-    SearchField.ATTRIBUTE: ("attribute_tsvec", "attribute_text"),
-}
-
-
-_TRIGRAM_FIELDS = {
-    SearchField.BOOK,
-    SearchField.TITLE,
-    SearchField.SUBTITLE,
-    SearchField.AUTHOR,
-    SearchField.SUBJECT,
-    SearchField.BOOKSHELF,
-}
-
-
-_ORDER_COLUMNS = {
-    OrderBy.DOWNLOADS: ("downloads", SortDirection.DESC, None),
-    OrderBy.TITLE: ("title", SortDirection.ASC, None),
-    OrderBy.AUTHOR: ("all_authors", SortDirection.ASC, "LAST"),
-    OrderBy.RELEASE_DATE: ("release_date", SortDirection.DESC, "LAST"),
-    OrderBy.RANDOM: ("RANDOM()", None, None),
-}
-
-
-_SELECT = "book_id, title, all_authors, downloads, dc, is_audio"
-
-
-_SUBQUERY = """book_id, title, all_authors, all_subjects, downloads, release_date, dc,
-    copyrighted, lang_codes, is_audio,
-    max_author_birthyear, min_author_birthyear,
-    max_author_deathyear, min_author_deathyear,
-    locc_codes,
-    tsvec, title_tsvec, subtitle_tsvec, author_tsvec, subject_tsvec, bookshelf_tsvec, attribute_tsvec,
-    book_text, bookshelf_text, attribute_text, subtitle"""
 
 
 class FullTextSearch:
