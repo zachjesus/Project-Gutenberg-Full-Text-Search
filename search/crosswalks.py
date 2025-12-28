@@ -141,36 +141,48 @@ def crosswalk_opds(row) -> dict[str, Any]:
 
     links = []
 
-    # Audiobooks: use HTML index | Text books: use EPUB3 with images only
+    # Audiobooks: use HTML index | Text books: prefer EPUB3 with images
     target_format = "index" if row.is_audio else "epub3.images"
+    fallback_formats = ["epub.images", "epub.noimages", "kindle.images", "pdf.images", "pdf.noimages", "html"] if not row.is_audio else ["html"]
 
-    for f in dc.get("format", []):
-        fn = f.get("filename")
-        if not fn:
-            continue
-        ftype = (f.get("filetype") or "").strip().lower()
+    # Try target format first, then fallbacks
+    for try_format in [target_format] + fallback_formats:
+        for f in dc.get("format", []):
+            fn = f.get("filename")
+            if not fn:
+                continue
+            ftype = (f.get("filetype") or "").strip().lower()
+            if ftype != try_format:
+                continue
 
-        if ftype != target_format:
-            continue
+            href = (
+                fn
+                if fn.startswith(("http://", "https://"))
+                else f"https://www.gutenberg.org/{fn.lstrip('/')}"
+            )
+            mtype = (f.get("mediatype") or "").strip()
 
-        href = (
-            fn
-            if fn.startswith(("http://", "https://"))
-            else f"https://www.gutenberg.org/{fn.lstrip('/')}"
-        )
-        mtype = (f.get("mediatype") or "").strip()
+            link = {
+                "rel": "http://opds-spec.org/acquisition/open-access",
+                "href": href,
+                "type": mtype or "application/epub+zip",
+            }
+            if f.get("extent") is not None and f["extent"] > 0:
+                link["length"] = f["extent"]
+            if f.get("hr_filetype"):
+                link["title"] = f["hr_filetype"]
+            links.append(link)
+            break
+        if links:
+            break
 
-        link = {
+    # OPDS 2.0 requires at least one acquisition link - fallback to readable HTML page
+    if not links:
+        links.append({
             "rel": "http://opds-spec.org/acquisition/open-access",
-            "href": href,
-            "type": mtype,
-        }
-        if f.get("extent") is not None and f["extent"] > 0:
-            link["length"] = f["extent"]
-        if f.get("hr_filetype"):
-            link["title"] = f["hr_filetype"]
-        links.append(link)
-        break
+            "href": f"https://www.gutenberg.org/ebooks/{row.book_id}",
+            "type": "text/html",
+        })
 
     result = {"metadata": metadata, "links": links}
 
