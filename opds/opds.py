@@ -1046,7 +1046,7 @@ class API:
                 {"rel": "up", "href": "/opds/", "type": "application/opds+json"},
                 {
                     "rel": "search",
-                    "href": f"/opds/search?field={field}{{&query,lang,sort,copyrighted,audiobook,locc}}" if field and field != "keyword" else "/opds/search{?query,field,lang,sort,copyrighted,audiobook,locc}",
+                    "href": f"/opds/search?field={field}{{&query,lang,sort,copyrighted,audiobook,locc}}",
                     "type": "application/opds+json",
                     "templated": True,
                 },
@@ -1184,7 +1184,7 @@ class API:
 
 if __name__ == "__main__":
     cherrypy.config.update(
-        {"server.socket_host": "127.0.0.1", "server.socket_port": 8080}
+        {"server.socket_host": "0.0.0.0", "server.socket_port": 8080}
     )
     cherrypy.tree.mount(API(), "/opds", {"/": {}})
     try:
