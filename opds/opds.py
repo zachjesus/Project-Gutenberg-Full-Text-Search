@@ -1046,7 +1046,7 @@ class API:
                 {"rel": "up", "href": "/opds/", "type": "application/opds+json"},
                 {
                     "rel": "search",
-                    "href": "/opds/search{?query,field,lang,sort,copyrighted,audiobook,locc}",
+                    "href": f"/opds/search?field={field}{{&query,lang,sort,copyrighted,audiobook,locc}}" if field and field != "keyword" else "/opds/search{?query,field,lang,sort,copyrighted,audiobook,locc}",
                     "type": "application/opds+json",
                     "templated": True,
                 },
