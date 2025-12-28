@@ -1,16 +1,32 @@
-import cherrypy
+from __future__ import annotations
+
+from typing import Any, Dict, List, Tuple
 from urllib.parse import quote, unquote, urlencode
-from ..search.full_text_search import FullTextSearch, SearchQuery, get_locc_children
-from ..search.constants import (
+
+import cherrypy
+from sqlalchemy import text
+
+from search.constants import (
+    Crosswalk,
+    CuratedBookshelves,
+    Language,
+    LoCCMainClass,
+    OrderBy,
     SearchField,
     SearchType,
-    OrderBy,
     SortDirection,
-    Crosswalks,
-    CuratedBookshelves,
 )
+from search.full_text_search import FullTextSearch
 
-def _parse_field(field: str) -> tuple[SearchField, SearchType]:
+SAMPLE_LIMIT = 15
+
+LANGUAGE_LIST = [
+    {"code": lang_enum.code, "label": lang_enum.label} for lang_enum in Language
+]
+_VALID_SORTS = set(OrderBy._value2member_map_.keys())
+
+
+def _parse_field(field: str) -> Tuple[SearchField, SearchType]:
     """Parse field param to (SearchField, SearchType). Default is fuzzy search."""
     if field.startswith("fts_"):
         search_type = SearchType.FTS
@@ -21,9 +37,9 @@ def _parse_field(field: str) -> tuple[SearchField, SearchType]:
     else:
         search_type = SearchType.FUZZY
         field_name = field
-    
+
     field_name = "book" if field_name == "keyword" else field_name
-    
+
     if field_name not in {f.value for f in SearchField}:
         return SearchField.BOOK, SearchType.FUZZY
     return SearchField(field_name), search_type
@@ -48,158 +64,640 @@ class API:
     def __init__(self):
         self.fts = FullTextSearch()
 
+    def _append_pagination_links(
+        self, links: List[Dict[str, Any]], build_url_fn, result: dict
+    ) -> None:
+        """Append first/previous/next/last pagination links to links list."""
+        if result.get("page", 1) > 1:
+            links.append(
+                {
+                    "rel": "first",
+                    "href": build_url_fn(1),
+                    "type": "application/opds+json",
+                }
+            )
+            links.append(
+                {
+                    "rel": "previous",
+                    "href": build_url_fn(result["page"] - 1),
+                    "type": "application/opds+json",
+                }
+            )
+        if result.get("page", 1) < result.get("total_pages", 1):
+            links.append(
+                {
+                    "rel": "next",
+                    "href": build_url_fn(result["page"] + 1),
+                    "type": "application/opds+json",
+                }
+            )
+            links.append(
+                {
+                    "rel": "last",
+                    "href": build_url_fn(result["total_pages"]),
+                    "type": "application/opds+json",
+                }
+            )
+
+    # ---------- Index (navigation) ----------
     @cherrypy.expose
-    @cherrypy.tools.json_out()
+    @cherrypy.tools.json_out()  # type: ignore[attr-defined]
     def index(self):
-        """Root catalog - groups with featured publications and navigation links."""
+        """Root catalog - navigation only (curated bookshelf groups live under /opds/bookshelves?category=...)."""
         navigation = [
             {
                 "href": "/opds/search?field=fuzzy_keyword",
                 "title": "Search Fuzzy (Typo-Tolerant, Slower)",
                 "type": "application/opds+json",
-                "rel": "subsection"
+                "rel": "subsection",
             },
             {
                 "href": "/opds/search?field=fts_keyword",
-                "title": "Search FTS (Strict, Faster, Operators: \"quotes for exact\", or, and, - for negate)",
+                "title": 'Search FTS (Strict, Faster, operators: "quotes", or, and, - for negate)',
                 "type": "application/opds+json",
-                "rel": "subsection"
+                "rel": "subsection",
+            },
+            {
+                "href": "/opds/bookshelves",
+                "title": "Browse by Bookshelf",
+                "type": "application/opds+json",
+                "rel": "subsection",
             },
             {
                 "href": "/opds/loccs",
                 "title": "Browse by LoCC (Subject Classification)",
                 "type": "application/opds+json",
-                "rel": "subsection"
+                "rel": "subsection",
+            },
+            {
+                "href": "/opds/subjects",
+                "title": "Browse by Subject",
+                "type": "application/opds+json",
+                "rel": "subsection",
             },
             {
                 "href": "/opds/search?sort=downloads&sort_order=desc",
                 "title": "Most Popular",
                 "type": "application/opds+json",
-                "rel": "http://opds-spec.org/sort/popular"
+                "rel": "http://opds-spec.org/sort/popular",
             },
             {
                 "href": "/opds/search?sort=release_date&sort_order=desc",
                 "title": "Recently Added",
                 "type": "application/opds+json",
-                "rel": "http://opds-spec.org/sort/new"
+                "rel": "http://opds-spec.org/sort/new",
             },
             {
                 "href": "/opds/search?sort=random",
                 "title": "Random",
                 "type": "application/opds+json",
-                "rel": "http://opds-spec.org/sort/random"
+                "rel": "http://opds-spec.org/sort/random",
             },
         ]
-        
-        # Build groups for ALL curated bookshelves with sample publications
-        # Uses MN table batch query for speed (single query for all bookshelves)
-        SAMPLE_LIMIT = 20
-        
-        # Collect ALL bookshelf IDs from all categories (no cap)
-        shelves_to_show = []
-        for category, shelves in CURATED_BOOKSHELVES.items():
-            shelves_to_show.extend(shelves)
-        
-        # Batch fetch all samples in one query (uses MN table - very fast!)
-        try:
-            bookshelf_ids = [s['id'] for s in shelves_to_show]
-            batch_results = self.fts.get_bookshelf_samples_batch(bookshelf_ids, sample_limit=SAMPLE_LIMIT, crosswalk=Crosswalk.OPDS)
-        except Exception as e:
-            cherrypy.log(f"Error fetching bookshelf samples: {e}")
-            batch_results = {}
-        
-        # Build groups from batch results
-        groups = []
-        for shelf in shelves_to_show:
-            shelf_data = batch_results.get(shelf['id'], {"results": [], "total": 0})
-            if shelf_data["results"]:  # Only show shelves with books
-                groups.append({
-                    "metadata": {
-                        "title": shelf['name'],
-                        "numberOfItems": shelf_data["total"]
-                    },
-                    "links": [
-                        {"href": f"/opds/bookshelves?id={shelf['id']}", "rel": "self", "type": "application/opds+json"}
-                    ],
-                    "publications": shelf_data["results"]
-                })
-        
+
+        # Return navigation only. Curated bookshelf samples are shown per-category
         return {
-            "metadata": {
-                "title": "Project Gutenberg Catalog"
-            },
+            "metadata": {"title": "Project Gutenberg Catalog"},
             "links": [
                 {"rel": "self", "href": "/opds/", "type": "application/opds+json"},
                 {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
-                {"rel": "search", "href": "/opds/search{?query,field,lang,sort,copyrighted,audiobook,locc}", "type": "application/opds+json", "templated": True}
+                {
+                    "rel": "search",
+                    "href": "/opds/search{?query,field,lang,sort,copyrighted,audiobook,locc}",
+                    "type": "application/opds+json",
+                    "templated": True,
+                },
             ],
             "navigation": navigation,
-            "groups": groups
         }
 
+    # ---------- Bookshelves ----------
     @cherrypy.expose
-    @cherrypy.tools.json_out()
-    def genres(self, code="", page=1, limit=28, query="", lang="", copyrighted="", audiobook="", sort="", sort_order=""):
+    @cherrypy.tools.json_out()  # type: ignore[attr-defined]
+    def bookshelves(
+        self,
+        id: int | None = None,
+        category: str | None = None,
+        page: int = 1,
+        limit: int = 28,
+        query: str = "",
+        lang: str = "",
+        copyrighted: str = "",
+        audiobook: str = "",
+        sort: str = "",
+        sort_order: str = "",
+    ):
         """
-        Broad Genre navigation and browsing.
-        
-        Without code: shows broad genres (Literature, Science, History, etc.)
-        With code: browse books in that genre with full search/filtering support
+        Bookshelf navigation using CuratedBookshelves.
+
+        - No id/category: list categories + grouped sample publications
+        - category: list bookshelf navigation links for that category
+        - id: browse books in that bookshelf (with facets & pagination)
         """
         try:
             page = max(1, int(page))
             limit = max(1, min(100, int(limit)))
         except (ValueError, TypeError):
             page, limit = 1, 28
-        
-        code = (code or "").strip().upper()
-        
-        # If no code, show the genre listing
-        if not code:
-            # Get broad genres from base tables
-            with self.fts.Session() as session:
-                broad_genres = get_broad_genres(session=session)
-            
-            # Build navigation for broad genres
-            navigation = [
-                {
-                    "href": f"/opds/genres?code={g['code']}",
-                    "title": f"{g['label']} ({g['book_count']})",
-                    "type": "application/opds+json",
-                    "rel": "subsection"
+
+        # Detail view for a single bookshelf id -> return publications + facets
+        if id is not None:
+            try:
+                bookshelf_id = int(id)
+            except (ValueError, TypeError):
+                raise cherrypy.HTTPError(400, "Invalid bookshelf ID")
+
+            # Resolve bookshelf name and parent category
+            bookshelf_name = f"Bookshelf {bookshelf_id}"
+            parent_category = None
+            for cat in CuratedBookshelves:
+                for sid, sname in cat.shelves:
+                    if sid == bookshelf_id:
+                        bookshelf_name = sname
+                        parent_category = cat.genre
+                        break
+                if parent_category:
+                    break
+
+            # Build query
+            try:
+                q = self.fts.query(crosswalk=Crosswalk.OPDS)
+                q.bookshelf_id(bookshelf_id)
+
+                if query.strip():
+                    sf, st = _parse_field("keyword")
+                    q.search(query, field=sf, search_type=st)
+
+                if lang:
+                    q.lang(lang)
+                if copyrighted == "true":
+                    q.copyrighted()
+                elif copyrighted == "false":
+                    q.public_domain()
+                if audiobook == "true":
+                    q.audiobook()
+                elif audiobook == "false":
+                    q.text_only()
+
+                if sort in _VALID_SORTS:
+                    direction = (
+                        SortDirection.ASC
+                        if sort_order == "asc"
+                        else SortDirection.DESC
+                        if sort_order == "desc"
+                        else None
+                    )
+                    q.order_by(OrderBy(sort), direction)
+                elif query.strip():
+                    q.order_by(OrderBy.RELEVANCE)
+                else:
+                    q.order_by(OrderBy.DOWNLOADS)
+
+                q[page, limit]
+                result = self.fts.execute(q)
+            except Exception as e:
+                cherrypy.log(f"Bookshelf browse error: {e}")
+                raise cherrypy.HTTPError(500, "Browse failed")
+
+            up_href = (
+                f"/opds/bookshelves?category={quote(parent_category)}"
+                if parent_category
+                else "/opds/bookshelves"
+            )
+
+            def build_url(p: int) -> str:
+                params = {
+                    "id": bookshelf_id,
+                    "query": query,
+                    "page": p,
+                    "limit": limit,
+                    "lang": lang,
+                    "copyrighted": copyrighted,
+                    "audiobook": audiobook,
+                    "sort": sort,
+                    "sort_order": sort_order,
                 }
-                for g in broad_genres
-            ]
-            
-            return {
+                return _url_with_params("/opds/bookshelves", params)
+
+            self_href = build_url(result["page"])
+
+            # Get dynamic top subjects for facets
+            top_subjects = None
+            try:
+                q_sub = self.fts.query()
+                q_sub.bookshelf_id(bookshelf_id)
+                if query.strip():
+                    sf, st = _parse_field("keyword")
+                    q_sub.search(query, field=sf, search_type=st)
+                if lang:
+                    q_sub.lang(lang)
+                if copyrighted == "true":
+                    q_sub.copyrighted()
+                elif copyrighted == "false":
+                    q_sub.public_domain()
+                if audiobook == "true":
+                    q_sub.audiobook()
+                elif audiobook == "false":
+                    q_sub.text_only()
+                top_subjects = self.fts.get_top_subjects_for_query(
+                    q_sub, limit=15, max_books=500
+                )
+            except Exception as e:
+                cherrypy.log(f"Top subjects error: {e}")
+
+            facets = self._build_bookshelf_facets(
+                bookshelf_id,
+                query,
+                limit,
+                lang,
+                copyrighted,
+                audiobook,
+                sort,
+                sort_order,
+                top_subjects,
+            )
+
+            feed = {
                 "metadata": {
-                    "title": "Broad Genres",
-                    "numberOfItems": len(broad_genres)
+                    "title": bookshelf_name,
+                    "numberOfItems": result["total"],
+                    "itemsPerPage": result["page_size"],
+                    "currentPage": result["page"],
                 },
                 "links": [
-                    {"rel": "self", "href": "/opds/genres", "type": "application/opds+json"},
+                    {"rel": "self", "href": self_href, "type": "application/opds+json"},
                     {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
-                    {"rel": "up", "href": "/opds/", "type": "application/opds+json"}
+                    {"rel": "up", "href": up_href, "type": "application/opds+json"},
+                    {
+                        "rel": "search",
+                        "href": f"/opds/bookshelves?id={bookshelf_id}{{&query,lang,sort,copyrighted,audiobook}}",
+                        "type": "application/opds+json",
+                        "templated": True,
+                    },
                 ],
-                "navigation": navigation
+                "publications": result["results"],
+                "facets": facets,
             }
-        
-        # Browse books within a specific broad genre
-        genre_label = LOCC_HIERARCHY.get(code, code)
-        
-        # Build query with filtering
+
+            self._append_pagination_links(feed["links"], build_url, result)
+            return feed
+
+        # Category listing -> navigation of shelves in that category + per-shelf sample groups
+        if category is not None:
+            category = unquote(category)
+            found = None
+            for cat in CuratedBookshelves:
+                if cat.genre == category:
+                    found = cat
+                    break
+            if not found:
+                raise cherrypy.HTTPError(404, "Category not found")
+
+            shelves = [{"id": s[0], "name": s[1]} for s in found.shelves]
+            navigation = [
+                {
+                    "href": f"/opds/bookshelves?id={s['id']}",
+                    "title": s["name"],
+                    "type": "application/opds+json",
+                    "rel": "http://opds-spec.org/acquisition",
+                }
+                for s in shelves
+            ]
+
+            # Batch fetch sample publications for all shelves in this category (SAMPLE_LIMIT per shelf)
+            SAMPLE_LIMIT = 15
+            groups = []
+            for s in shelves:
+                shelf_id = s["id"]
+                try:
+                    q = self.fts.query(crosswalk=Crosswalk.OPDS)
+                    q.bookshelf_id(shelf_id)
+                    # Order randomly to get a sample set
+                    q.order_by(OrderBy.RANDOM)
+                    # Get first page with SAMPLE_LIMIT items
+                    q[1, SAMPLE_LIMIT]
+                    result = self.fts.execute(q)
+                    pubs = result.get("results", [])
+                    total = result.get("total", 0)
+                except Exception as e:
+                    cherrypy.log(
+                        f"Error fetching bookshelf samples for shelf {shelf_id}: {e}"
+                    )
+                    pubs = []
+                    total = 0
+
+                if not pubs:
+                    continue
+
+                groups.append(
+                    {
+                        "metadata": {
+                            "title": s["name"],
+                            "numberOfItems": total,
+                        },
+                        "links": [
+                            {
+                                "href": f"/opds/bookshelves?id={s['id']}",
+                                "rel": "self",
+                                "type": "application/opds+json",
+                            }
+                        ],
+                        "publications": pubs,
+                    }
+                )
+
+            return {
+                "metadata": {"title": category, "numberOfItems": len(shelves)},
+                "links": [
+                    {
+                        "rel": "self",
+                        "href": f"/opds/bookshelves?category={quote(category)}",
+                        "type": "application/opds+json",
+                    },
+                    {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
+                    {
+                        "rel": "up",
+                        "href": "/opds/bookshelves",
+                        "type": "application/opds+json",
+                    },
+                ],
+                "navigation": navigation,
+                "groups": groups,
+            }
+
+        # No id/category -> return category navigation only.
+        # Per-category groups (sampled publications) are provided by the category endpoint.
+        navigation = [
+            {
+                "href": f"/opds/bookshelves?category={quote(cat.genre)}",
+                "title": f"{cat.genre} ({len(cat.shelves)} shelves)",
+                "type": "application/opds+json",
+                "rel": "subsection",
+            }
+            for cat in CuratedBookshelves
+        ]
+        return {
+            "metadata": {
+                "title": "Bookshelves",
+                "numberOfItems": len(CuratedBookshelves),
+            },
+            "links": [
+                {
+                    "rel": "self",
+                    "href": "/opds/bookshelves",
+                    "type": "application/opds+json",
+                },
+                {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
+                {"rel": "up", "href": "/opds/", "type": "application/opds+json"},
+            ],
+            "navigation": navigation,
+        }
+
+    def _build_bookshelf_facets(
+        self,
+        bookshelf_id,
+        query,
+        limit,
+        lang,
+        copyrighted,
+        audiobook,
+        sort,
+        sort_order,
+        top_subjects=None,
+    ):
+        """Build facets for bookshelf browsing (detail view)."""
+
+        def url(q, lng, cr, ab, srt, srt_ord):
+            params = {
+                "id": bookshelf_id,
+                "query": q,
+                "page": 1,
+                "limit": limit,
+                "lang": lng,
+                "copyrighted": cr,
+                "audiobook": ab,
+                "sort": srt,
+                "sort_order": srt_ord,
+            }
+            return _url_with_params("/opds/bookshelves", params)
+
+        facets = [
+            {
+                "metadata": {"title": "Sort By"},
+                "links": [
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "downloads", "desc"),
+                        "Most Popular",
+                        sort == "downloads" or not sort,
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "relevance", ""),
+                        "Relevance",
+                        sort == "relevance",
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "title", "asc"),
+                        "Title (A-Z)",
+                        sort == "title",
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "author", "asc"),
+                        "Author (A-Z)",
+                        sort == "author",
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "random", ""),
+                        "Random",
+                        sort == "random",
+                    ),
+                ],
+            },
+        ]
+
+        if top_subjects:
+            facets.append(
+                {
+                    "metadata": {"title": "Top Subjects in Results"},
+                    "links": [
+                        {
+                            "href": f"/opds/subjects?id={s['id']}",
+                            "type": "application/opds+json",
+                            "title": f"{s['name']} ({s['count']})",
+                        }
+                        for s in top_subjects
+                    ],
+                }
+            )
+
+        facets.extend(
+            [
+                {
+                    "metadata": {"title": "Copyright Status"},
+                    "links": [
+                        _facet_link(
+                            url(query, lang, "", audiobook, sort, sort_order),
+                            "Any",
+                            not copyrighted,
+                        ),
+                        _facet_link(
+                            url(query, lang, "false", audiobook, sort, sort_order),
+                            "Public Domain",
+                            copyrighted == "false",
+                        ),
+                        _facet_link(
+                            url(query, lang, "true", audiobook, sort, sort_order),
+                            "Copyrighted",
+                            copyrighted == "true",
+                        ),
+                    ],
+                },
+                {
+                    "metadata": {"title": "Format"},
+                    "links": [
+                        _facet_link(
+                            url(query, lang, copyrighted, "", sort, sort_order),
+                            "Any",
+                            not audiobook,
+                        ),
+                        _facet_link(
+                            url(query, lang, copyrighted, "false", sort, sort_order),
+                            "Text",
+                            audiobook == "false",
+                        ),
+                        _facet_link(
+                            url(query, lang, copyrighted, "true", sort, sort_order),
+                            "Audiobook",
+                            audiobook == "true",
+                        ),
+                    ],
+                },
+                {
+                    "metadata": {"title": "Language"},
+                    "links": [
+                        _facet_link(
+                            url(query, "", copyrighted, audiobook, sort, sort_order),
+                            "Any",
+                            not lang,
+                        )
+                    ]
+                    + [
+                        _facet_link(
+                            url(
+                                query,
+                                item["code"],
+                                copyrighted,
+                                audiobook,
+                                sort,
+                                sort_order,
+                            ),
+                            item["label"],
+                            lang == item["code"],
+                        )
+                        for item in LANGUAGE_LIST
+                    ],
+                },
+            ]
+        )
+        return facets
+
+    # ---------- LoCC (hierarchical) ----------
+    @cherrypy.expose
+    @cherrypy.tools.json_out()  # type: ignore[attr-defined]
+    def loccs(
+        self,
+        parent: str = "",
+        page: int = 1,
+        limit: int = 28,
+        query: str = "",
+        lang: str = "",
+        copyrighted: str = "",
+        audiobook: str = "",
+        sort: str = "",
+        sort_order: str = "",
+    ):
+        """
+        LoCC hierarchical navigation (simplified).
+
+        - Without parent: list top-level LoCC classes (navigation)
+        - With parent:
+          - If children exist: return navigation of those children (no groups)
+          - If no children: treat as leaf and return books (publications) with facets/pagination
+        """
+        parent = (parent or "").strip().upper()
+        try:
+            page = max(1, int(page))
+            limit = max(1, min(100, int(limit)))
+        except (ValueError, TypeError):
+            page, limit = 1, 28
+
+        # Get children via FullTextSearch helper (delegates to helpers.get_locc_children)
+        try:
+            children = self.fts.get_locc_children(parent)
+        except Exception as e:
+            cherrypy.log(f"LoCC children error: {e}")
+            children = []
+
+        # If there are children, return navigation entries for them directly.
+        # The helper `get_locc_children` already returns descendant rows (pk/locc/has_children),
+        # so there's no need to expand via BFS here. Use the returned list so the
+        # client can display navigation links and click through to either more nav
+        # or to a leaf (books) when appropriate.
+        if children:
+            # Ensure deterministic ordering similar to previous behavior.
+            children.sort(key=lambda x: (len(x.get("code", "")), x.get("code", "")))
+
+            navigation = [
+                {
+                    "href": f"(
+
+
+
+
+                                    )
+
+                                    /opds/loccs?parent={child['code']}",
+                    "title": child.get("label", child["code"]),
+                    "type": "application/opds+json",
+                    "rel": "subsection"
+                    if child.get("has_children")
+                    else "h
+                                        t
+                                    tp://opds-spec.org/acquisition",
+                }
+                for child in children
+            ]
+
+            links = [
+                {
+                    "rel": "self",
+                    "href": f"/opds/loccs?parent={parent}" if parent else "/opds/loccs",
+                    "type": "application/opds+json",
+                },
+                {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
+                {
+                    "rel": "up",
+                    "href": "/opds/loccs" if parent else "/opds/",
+                    "type": "application/opds+json",
+                },
+            ]
+
+            return {
+                "metadata": {
+                    "title": parent or "Subject Classification",
+                },
+                "links": links,
+                "navigation": navigation,
+            }
+
+        # No children -> leaf node: return books with filtering/sorting/facets (similar to other endpoints)
         try:
             q = self.fts.query(crosswalk=Crosswalk.OPDS)
-            
-            # Filter by broad genre (LoCC prefix)
-            q.locc(code)
-            
-            # Apply optional search
+            q.locc(parent)
+
             if query.strip():
-                search_field, search_type = _parse_field("keyword")
-                q.search(query, field=search_field, search_type=search_type)
-            
-            # Apply filters
+                sf, st = _parse_field("keyword")
+                q.search(query, field=sf, search_type=st)
+
             if lang:
                 q.lang(lang)
             if copyrighted == "true":
@@ -210,632 +708,293 @@ class API:
                 q.audiobook()
             elif audiobook == "false":
                 q.text_only()
-            
-            # Apply sorting
-            if sort in OrderBy._value2member_map_:
-                direction = SortDirection.ASC if sort_order == "asc" else SortDirection.DESC if sort_order == "desc" else None
+
+            if sort in _VALID_SORTS:
+                direction = (
+                    SortDirection.ASC
+                    if sort_order == "asc"
+                    else SortDirection.DESC
+                    if sort_order == "desc"
+                    else None
+                )
                 q.order_by(OrderBy(sort), direction)
             elif query.strip():
                 q.order_by(OrderBy.RELEVANCE)
             else:
                 q.order_by(OrderBy.DOWNLOADS)
-            
+
             q[page, limit]
             result = self.fts.execute(q)
-            
         except Exception as e:
-            cherrypy.log(f"Genre browse error: {e}")
+            cherrypy.log(f"LoCC browse error: {e}")
             raise cherrypy.HTTPError(500, "Browse failed")
-        
-        # Build URL helper for this endpoint
-        def build_url(q_param, pg, lim, lng, cr, ab, srt, srt_ord):
+
+        # URL builder for pagination/facets
+        def build_url(p: int) -> str:
             params = {
-                "code": code, "query": q_param, "page": pg, "limit": lim,
-                "lang": lng, "copyrighted": cr, "audiobook": ab,
-                "sort": srt, "sort_order": srt_ord
+                "parent": parent,
+                "query": query,
+                "page": p,
+                "limit": limit,
+                "lang": lang,
+                "copyrighted": copyrighted,
+                "audiobook": audiobook,
+                "sort": sort,
+                "sort_order": sort_order,
             }
-            return _url_with_params("/opds/genres", params)
-        
-        self_href = build_url(query, page, limit, lang, copyrighted, audiobook, sort, sort_order)
-        
-        # Build facets for filtering within this genre
-        facets = self._build_genre_facets(code, query, limit, lang, copyrighted, audiobook, sort, sort_order)
-        
+            return _url_with_params("/opds/loccs", params)
+
+        self_href = build_url(result["page"])
+
+        # dynamic top subjects for facets (optional)
+        top_subjects = None
+        try:
+            q_sub = self.fts.query()
+            q_sub.locc(parent)
+            if query.strip():
+                sf, st = _parse_field("keyword")
+                q_sub.search(query, field=sf, search_type=st)
+            if lang:
+                q_sub.lang(lang)
+            if copyrighted == "true":
+                q_sub.copyrighted()
+            elif copyrighted == "false":
+                q_sub.public_domain()
+            if audiobook == "true":
+                q_sub.audiobook()
+            elif audiobook == "false":
+                q_sub.text_only()
+            top_subjects = self.fts.get_top_subjects_for_query(
+                q_sub, limit=15, max_books=500
+            )
+        except Exception as e:
+            cherrypy.log(f"Top subjects error: {e}")
+
+        facets = self._build_locc_facets(
+            parent,
+            query,
+            limit,
+            lang,
+            copyrighted,
+            audiobook,
+            sort,
+            sort_order,
+            top_subjects,
+        )
+
         feed = {
             "metadata": {
-                "title": f"Browse: {genre_label}",
+                "title": parent,
                 "numberOfItems": result["total"],
                 "itemsPerPage": result["page_size"],
-                "currentPage": result["page"]
+                "currentPage": result["page"],
             },
             "links": [
                 {"rel": "self", "href": self_href, "type": "application/opds+json"},
                 {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
-                {"rel": "up", "href": "/opds/genres", "type": "application/opds+json"},
-                {"rel": "search", "href": f"/opds/genres?code={code}{{&query,lang,sort,copyrighted,audiobook}}", "type": "application/opds+json", "templated": True}
+                {"rel": "up", "href": "/opds/loccs", "type": "application/opds+json"},
+                {
+                    "rel": "search",
+                    "href": f"/opds/loccs?parent={parent}{{&query,lang,sort,copyrighted,audiobook}}",
+                    "type": "application/opds+json",
+                    "templated": True,
+                },
             ],
             "publications": result["results"],
-            "facets": facets
+            "facets": facets,
         }
-        
-        # Add pagination links
-        if result["page"] > 1:
-            feed["links"].append({"rel": "first", "href": build_url(query, 1, limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-            feed["links"].append({"rel": "previous", "href": build_url(query, result['page'] - 1, limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-        if result["page"] < result["total_pages"]:
-            feed["links"].append({"rel": "next", "href": build_url(query, result['page'] + 1, limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-            feed["links"].append({"rel": "last", "href": build_url(query, result['total_pages'], limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-        
-        return feed
-    
-    def _build_genre_facets(self, code, query, limit, lang, copyrighted, audiobook, sort, sort_order):
-        """Build facets for genre browse (excludes broad genre selector)."""
-        def url(q, lng, cr, ab, srt, srt_ord):
-            params = {
-                "code": code, "query": q, "page": 1, "limit": limit,
-                "lang": lng, "copyrighted": cr, "audiobook": ab,
-                "sort": srt, "sort_order": srt_ord
-            }
-            return _url_with_params("/opds/genres", params)
 
-        return [
-            {
-                "metadata": {"title": "Sort By"},
-                "links": [
-                    _facet_link(url(query, lang, copyrighted, audiobook, "downloads", "desc"), "Most Popular", sort == "downloads" or not sort),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "relevance", ""), "Relevance", sort == "relevance"),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "title", "asc"), "Title (A-Z)", sort == "title"),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "author", "asc"), "Author (A-Z)", sort == "author"),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "random", ""), "Random", sort == "random"),
-                ]
-            },
-            {
-                "metadata": {"title": "Copyright Status"},
-                "links": [
-                    _facet_link(url(query, lang, "", audiobook, sort, sort_order), "Any", not copyrighted),
-                    _facet_link(url(query, lang, "false", audiobook, sort, sort_order), "Public Domain", copyrighted == "false"),
-                    _facet_link(url(query, lang, "true", audiobook, sort, sort_order), "Copyrighted", copyrighted == "true"),
-                ]
-            },
-            {
-                "metadata": {"title": "Format"},
-                "links": [
-                    _facet_link(url(query, lang, copyrighted, "", sort, sort_order), "Any", not audiobook),
-                    _facet_link(url(query, lang, copyrighted, "false", sort, sort_order), "Text", audiobook == "false"),
-                    _facet_link(url(query, lang, copyrighted, "true", sort, sort_order), "Audiobook", audiobook == "true"),
-                ]
-            },
-            {
-                "metadata": {"title": "Language"},
-                "links": [_facet_link(url(query, "", copyrighted, audiobook, sort, sort_order), "Any", not lang)] + [
-                    _facet_link(url(query, item['code'], copyrighted, audiobook, sort, sort_order), item['label'], lang == item['code'])
-                    for item in LANGUAGE_LIST
-                ]
-            }
-        ]
-    
-    @cherrypy.expose
-    @cherrypy.tools.json_out()
-    def loccs(self, parent="", page=1, limit=28, query="", lang="", copyrighted="", audiobook="", sort="", sort_order=""):
-        """
-        Subject Classification (LoCC) hierarchical navigation with full filtering.
-        
-        Without parent: shows top-level classes (A, B, C...)
-        With parent: shows children of that class, or books if leaf node
-        At any level with books: supports search and filtering via facets
-        """
-        parent = (parent or "").strip().upper()
-        
-        try:
-            page = max(1, int(page))
-            limit = max(1, min(100, int(limit)))
-        except (ValueError, TypeError):
-            page, limit = 1, 28
-        
-        children = get_locc_children(parent)
-        
-        # Build breadcrumb path
-        path = get_locc_path(parent) if parent else []
-        
-        # If no children, this is a leaf - return books with facets
-        if not children and parent:
-            try:
-                q = self.fts.query(crosswalk=Crosswalk.OPDS)
-                q.locc(parent)
-                
-                # Apply optional search
-                if query.strip():
-                    search_field, search_type = _parse_field("keyword")
-                    q.search(query, field=search_field, search_type=search_type)
-                
-                # Apply filters
-                if lang:
-                    q.lang(lang)
-                if copyrighted == "true":
-                    q.copyrighted()
-                elif copyrighted == "false":
-                    q.public_domain()
-                if audiobook == "true":
-                    q.audiobook()
-                elif audiobook == "false":
-                    q.text_only()
-                
-                # Apply sorting
-                if sort in OrderBy._value2member_map_:
-                    direction = SortDirection.ASC if sort_order == "asc" else SortDirection.DESC if sort_order == "desc" else None
-                    q.order_by(OrderBy(sort), direction)
-                elif query.strip():
-                    q.order_by(OrderBy.RELEVANCE)
-                else:
-                    q.order_by(OrderBy.DOWNLOADS)
-                
-                q[page, limit]
-                result = self.fts.execute(q)
-                
-            except Exception as e:
-                cherrypy.log(f"LoCC browse error: {e}")
-                raise cherrypy.HTTPError(500, "Browse failed")
-            
-            # Build URL helper
-            def build_url(q_param, pg, lim, lng, cr, ab, srt, srt_ord):
-                params = {
-                    "parent": parent, "query": q_param, "page": pg, "limit": lim,
-                    "lang": lng, "copyrighted": cr, "audiobook": ab,
-                    "sort": srt, "sort_order": srt_ord
-                }
-                return _url_with_params("/opds/loccs", params)
-            
-            self_href = build_url(query, page, limit, lang, copyrighted, audiobook, sort, sort_order)
-            up_parent = path[-2]['code'] if len(path) > 1 else ""
-            
-            # Get top subjects for this LoCC (for dynamic facets)
-            top_subjects = None
-            try:
-                q_for_subjects = self.fts.query()
-                q_for_subjects.locc(parent)
-                if query.strip():
-                    search_field, search_type = _parse_field("keyword")
-                    q_for_subjects.search(query, field=search_field, search_type=search_type)
-                if lang:
-                    q_for_subjects.lang(lang)
-                if copyrighted == "true":
-                    q_for_subjects.copyrighted()
-                elif copyrighted == "false":
-                    q_for_subjects.public_domain()
-                if audiobook == "true":
-                    q_for_subjects.audiobook()
-                elif audiobook == "false":
-                    q_for_subjects.text_only()
-                top_subjects = self.fts.get_top_subjects_for_query(q_for_subjects, limit=15, max_books=500)
-            except Exception as e:
-                cherrypy.log(f"Top subjects error: {e}")
-            
-            # Build facets for filtering
-            facets = self._build_locc_facets(parent, query, limit, lang, copyrighted, audiobook, sort, sort_order, top_subjects)
-            
-            feed = {
-                "metadata": {
-                    "title": LOCC_HIERARCHY.get(parent, parent),
-                    "subtitle": " > ".join(p['label'] for p in path) if path else None,
-                    "numberOfItems": result["total"],
-                    "itemsPerPage": result["page_size"],
-                    "currentPage": result["page"]
-                },
-                "links": [
-                    {"rel": "self", "href": self_href, "type": "application/opds+json"},
-                    {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
-                    {"rel": "up", "href": f"/opds/loccs?parent={up_parent}" if up_parent else "/opds/loccs", "type": "application/opds+json"},
-                    {"rel": "search", "href": f"/opds/loccs?parent={parent}{{&query,lang,sort,copyrighted,audiobook}}", "type": "application/opds+json", "templated": True}
-                ],
-                "publications": result["results"],
-                "facets": facets
-            }
-            
-            # Add pagination links
-            if result["page"] > 1:
-                feed["links"].append({"rel": "first", "href": build_url(query, 1, limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-                feed["links"].append({"rel": "previous", "href": build_url(query, result['page'] - 1, limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-            if result["page"] < result["total_pages"]:
-                feed["links"].append({"rel": "next", "href": build_url(query, result['page'] + 1, limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-                feed["links"].append({"rel": "last", "href": build_url(query, result['total_pages'], limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-            
-            return feed
-        
-        # Build navigation feed for children (no facets at navigation level)
-        navigation = []
-        for child in children:
-            nav_item = {
-                "href": f"/opds/loccs?parent={child['code']}",
-                "title": child['label'],
-                "type": "application/opds+json",
-                "rel": "subsection"  # All LoCC items use subsection (they link to feeds, not files)
-            }
-            navigation.append(nav_item)
-        
-        links = [
-            {"rel": "self", "href": f"/opds/loccs?parent={parent}" if parent else "/opds/loccs", "type": "application/opds+json"},
-            {"rel": "start", "href": "/opds/", "type": "application/opds+json"}
-        ]
-        
-        if parent and path:
-            # Add "up" link to parent
-            up_parent = path[-2]['code'] if len(path) > 1 else ""
-            links.append({"rel": "up", "href": f"/opds/loccs?parent={up_parent}" if up_parent else "/opds/loccs", "type": "application/opds+json"})
-        elif parent:
-            links.append({"rel": "up", "href": "/opds/loccs", "type": "application/opds+json"})
-        else:
-            links.append({"rel": "up", "href": "/opds/", "type": "application/opds+json"})
-        
-        return {
-            "metadata": {
-                "title": LOCC_HIERARCHY.get(parent, "Subject Classification") if parent else "Subject Classification",
-                "subtitle": " > ".join(p['label'] for p in path) if path else None
-            },
-            "links": links,
-            "navigation": navigation
-        }
-    
-    def _build_locc_facets(self, parent, query, limit, lang, copyrighted, audiobook, sort, sort_order, top_subjects=None):
-        """Build facets for LoCC leaf node (excludes LoCC selector since we're already deep in hierarchy)."""
+        # Add pagination links
+        self._append_pagination_links(feed["links"], build_url, result)
+        return feed
+
+    def _build_locc_facets(
+        self,
+        parent,
+        query,
+        limit,
+        lang,
+        copyrighted,
+        audiobook,
+        sort,
+        sort_order,
+        top_subjects=None,
+    ):
+        """Build facets for LoCC leaf node."""
+
         def url(q, lng, cr, ab, srt, srt_ord):
             params = {
-                "parent": parent, "query": q, "page": 1, "limit": limit,
-                "lang": lng, "copyrighted": cr, "audiobook": ab,
-                "sort": srt, "sort_order": srt_ord
+                "parent": parent,
+                "query": q,
+                "page": 1,
+                "limit": limit,
+                "lang": lng,
+                "copyrighted": cr,
+                "audiobook": ab,
+                "sort": srt,
+                "sort_order": srt_ord,
             }
             return _url_with_params("/opds/loccs", params)
-        
+
         facets = [
             {
                 "metadata": {"title": "Sort By"},
                 "links": [
-                    _facet_link(url(query, lang, copyrighted, audiobook, "downloads", "desc"), "Most Popular", sort == "downloads" or not sort),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "relevance", ""), "Relevance", sort == "relevance"),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "title", "asc"), "Title (A-Z)", sort == "title"),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "author", "asc"), "Author (A-Z)", sort == "author"),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "random", ""), "Random", sort == "random"),
-                ]
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "downloads", "desc"),
+                        "Most Popular",
+                        sort == "downloads" or not sort,
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "relevance", ""),
+                        "Relevance",
+                        sort == "relevance",
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "title", "asc"),
+                        "Title (A-Z)",
+                        sort == "title",
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "author", "asc"),
+                        "Author (A-Z)",
+                        sort == "author",
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "random", ""),
+                        "Random",
+                        sort == "random",
+                    ),
+                ],
             },
         ]
-        
-        # Add top subjects if available
-        if top_subjects:
-            facets.append({
-                "metadata": {"title": "Top Subjects in Results"},
-                "links": [
-                    {
-                        "href": f"/opds/subjects?id={s['id']}",
-                        "type": "application/opds+json",
-                        "title": f"{s['name']} ({s['count']})"
-                    }
-                    for s in top_subjects
-                ]
-            })
-        
-        facets.extend([
-            {
-                "metadata": {"title": "Copyright Status"},
-                "links": [
-                    _facet_link(url(query, lang, "", audiobook, sort, sort_order), "Any", not copyrighted),
-                    _facet_link(url(query, lang, "false", audiobook, sort, sort_order), "Public Domain", copyrighted == "false"),
-                    _facet_link(url(query, lang, "true", audiobook, sort, sort_order), "Copyrighted", copyrighted == "true"),
-                ]
-            },
-            {
-                "metadata": {"title": "Format"},
-                "links": [
-                    _facet_link(url(query, lang, copyrighted, "", sort, sort_order), "Any", not audiobook),
-                    _facet_link(url(query, lang, copyrighted, "false", sort, sort_order), "Text", audiobook == "false"),
-                    _facet_link(url(query, lang, copyrighted, "true", sort, sort_order), "Audiobook", audiobook == "true"),
-                ]
-            },
-            {
-                "metadata": {"title": "Language"},
-                "links": [_facet_link(url(query, "", copyrighted, audiobook, sort, sort_order), "Any", not lang)] + [
-                    _facet_link(url(query, item['code'], copyrighted, audiobook, sort, sort_order), item['label'], lang == item['code'])
-                    for item in LANGUAGE_LIST
-                ]
-            }
-        ])
-        
-        return facets
 
-    @cherrypy.expose
-    @cherrypy.tools.json_out()
-    def bookshelves(self, id=None, category=None, page=1, limit=28, query="", lang="", copyrighted="", audiobook="", sort="", sort_order=""):
-        """
-        Bookshelf navigation using curated bookshelves with search/filtering support.
-        
-        Without id or category: lists bookshelf categories
-        With category: lists bookshelves in that category with sample publications
-        With id: returns books in that bookshelf with full search/filtering
-        """
-        try:
-            page = max(1, int(page))
-            limit = max(1, min(100, int(limit)))
-        except (ValueError, TypeError):
-            page, limit = 1, 28
-        
-        if id is not None:
-            # Return books in this bookshelf with search/filtering support
-            try:
-                bookshelf_id = int(id)
-            except (ValueError, TypeError):
-                raise cherrypy.HTTPError(400, "Invalid bookshelf ID")
-            
-            # Find bookshelf name from curated list
-            bookshelf_name = f"Bookshelf {bookshelf_id}"
-            parent_category = None
-            for cat, shelves in CURATED_BOOKSHELVES.items():
-                for shelf in shelves:
-                    if shelf['id'] == bookshelf_id:
-                        bookshelf_name = shelf['name']
-                        parent_category = cat
-                        break
-                if parent_category:
-                    break
-            
-            # Build query with filtering
-            try:
-                q = self.fts.query(crosswalk=Crosswalk.OPDS)
-                q.bookshelf_id(bookshelf_id)
-                
-                # Apply optional search
-                if query.strip():
-                    search_field, search_type = _parse_field("keyword")
-                    q.search(query, field=search_field, search_type=search_type)
-                
-                # Apply filters
-                if lang:
-                    q.lang(lang)
-                if copyrighted == "true":
-                    q.copyrighted()
-                elif copyrighted == "false":
-                    q.public_domain()
-                if audiobook == "true":
-                    q.audiobook()
-                elif audiobook == "false":
-                    q.text_only()
-                
-                # Apply sorting
-                if sort in _VALID_SORTS:
-                    direction = SortDirection.ASC if sort_order == "asc" else SortDirection.DESC if sort_order == "desc" else None
-                    q.order_by(OrderBy(sort), direction)
-                elif query.strip():
-                    q.order_by(OrderBy.RELEVANCE)
-                else:
-                    q.order_by(OrderBy.DOWNLOADS)
-                
-                q[page, limit]
-                result = self.fts.execute(q)
-                
-            except Exception as e:
-                cherrypy.log(f"Bookshelf browse error: {e}")
-                raise cherrypy.HTTPError(500, "Browse failed")
-            
-            up_href = f"/opds/bookshelves?category={quote(parent_category)}" if parent_category else "/opds/bookshelves"
-            
-            # Build URL helper
-            def build_url(q_param, pg, lim, lng, cr, ab, srt, srt_ord):
-                params = {
-                    "id": bookshelf_id, "query": q_param, "page": pg, "limit": lim,
-                    "lang": lng, "copyrighted": cr, "audiobook": ab,
-                    "sort": srt, "sort_order": srt_ord
-                }
-                return _url_with_params("/opds/bookshelves", params)
-            
-            self_href = build_url(query, page, limit, lang, copyrighted, audiobook, sort, sort_order)
-            
-            # Get top subjects for this bookshelf (for dynamic facets)
-            top_subjects = None
-            try:
-                q_for_subjects = self.fts.query()
-                q_for_subjects.bookshelf_id(bookshelf_id)
-                if query.strip():
-                    search_field, search_type = _parse_field("keyword")
-                    q_for_subjects.search(query, field=search_field, search_type=search_type)
-                if lang:
-                    q_for_subjects.lang(lang)
-                if copyrighted == "true":
-                    q_for_subjects.copyrighted()
-                elif copyrighted == "false":
-                    q_for_subjects.public_domain()
-                if audiobook == "true":
-                    q_for_subjects.audiobook()
-                elif audiobook == "false":
-                    q_for_subjects.text_only()
-                top_subjects = self.fts.get_top_subjects_for_query(q_for_subjects, limit=15, max_books=500)
-            except Exception as e:
-                cherrypy.log(f"Top subjects error: {e}")
-            
-            # Build facets for filtering
-            facets = self._build_bookshelf_facets(bookshelf_id, query, limit, lang, copyrighted, audiobook, sort, sort_order, top_subjects)
-            
-            feed = {
-                "metadata": {
-                    "title": bookshelf_name,
-                    "numberOfItems": result["total"],
-                    "itemsPerPage": result["page_size"],
-                    "currentPage": result["page"]
-                },
-                "links": [
-                    {"rel": "self", "href": self_href, "type": "application/opds+json"},
-                    {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
-                    {"rel": "up", "href": up_href, "type": "application/opds+json"},
-                    {"rel": "search", "href": f"/opds/bookshelves?id={bookshelf_id}{{&query,lang,sort,copyrighted,audiobook}}", "type": "application/opds+json", "templated": True}
-                ],
-                "publications": result["results"],
-                "facets": facets
-            }
-            
-            # Add pagination links
-            if result["page"] > 1:
-                feed["links"].append({"rel": "first", "href": build_url(query, 1, limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-                feed["links"].append({"rel": "previous", "href": build_url(query, result['page'] - 1, limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-            if result["page"] < result["total_pages"]:
-                feed["links"].append({"rel": "next", "href": build_url(query, result['page'] + 1, limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-                feed["links"].append({"rel": "last", "href": build_url(query, result['total_pages'], limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-            
-            return feed
-        
-        if category is not None:
-            # List bookshelves in this category (navigation format - no sample publications to avoid N+1)
-            # Decode URL-encoded category name
-            category = unquote(category)
-            if category not in CURATED_BOOKSHELVES:
-                raise cherrypy.HTTPError(404, "Category not found")
-            
-            shelves = CURATED_BOOKSHELVES[category]
-            
-            # Build navigation links for each shelf
-            navigation = [
+        if top_subjects:
+            facets.append(
                 {
-                    "href": f"/opds/bookshelves?id={shelf['id']}",
-                    "title": shelf["name"],
-                    "type": "application/opds+json",
-                    "rel": "http://opds-spec.org/acquisition"
+                    "metadata": {"title": "Top Subjects in Results"},
+                    "links": [
+                        {
+                            "href": f"/opds/subjects?id={s['id']}",
+                            "type": "application/opds+json",
+                            "title": f"{s['name']} ({s['count']})",
+                        }
+                        for s in top_subjects
+                    ],
                 }
-                for shelf in shelves
-            ]
-            
-            return {
-                "metadata": {
-                    "title": category,
-                    "numberOfItems": len(shelves)
+            )
+
+        facets.extend(
+            [
+                {
+                    "metadata": {"title": "Copyright Status"},
+                    "links": [
+                        _facet_link(
+                            url(query, lang, "", audiobook, sort, sort_order),
+                            "Any",
+                            not copyrighted,
+                        ),
+                        _facet_link(
+                            url(query, lang, "false", audiobook, sort, sort_order),
+                            "Public Domain",
+                            copyrighted == "false",
+                        ),
+                        _facet_link(
+                            url(query, lang, "true", audiobook, sort, sort_order),
+                            "Copyrighted",
+                            copyrighted == "true",
+                        ),
+                    ],
                 },
-                "links": [
-                    {"rel": "self", "href": f"/opds/bookshelves?category={quote(category)}", "type": "application/opds+json"},
-                    {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
-                    {"rel": "up", "href": "/opds/bookshelves", "type": "application/opds+json"}
-                ],
-                "navigation": navigation
-            }
-        
-        # List all categories (navigation format - no DB queries needed)
-        navigation = [
-            {
-                "href": f"/opds/bookshelves?category={quote(cat)}",
-                "title": f"{cat} ({len(shelves)} shelves)",
-                "type": "application/opds+json",
-                "rel": "subsection"
-            }
-            for cat, shelves in CURATED_BOOKSHELVES.items()
-        ]
-        
-        return {
-            "metadata": {
-                "title": "Bookshelves",
-                "numberOfItems": len(CURATED_BOOKSHELVES)
-            },
-            "links": [
-                {"rel": "self", "href": "/opds/bookshelves", "type": "application/opds+json"},
-                {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
-                {"rel": "up", "href": "/opds/", "type": "application/opds+json"}
-            ],
-            "navigation": navigation
-        }
-    
-    def _build_bookshelf_facets(self, bookshelf_id, query, limit, lang, copyrighted, audiobook, sort, sort_order, top_subjects=None):
-        """Build facets for bookshelf browse."""
-        def url(q, lng, cr, ab, srt, srt_ord):
-            params = {
-                "id": bookshelf_id, "query": q, "page": 1, "limit": limit,
-                "lang": lng, "copyrighted": cr, "audiobook": ab,
-                "sort": srt, "sort_order": srt_ord
-            }
-            return _url_with_params("/opds/bookshelves", params)
-        
-        facets = [
-            {
-                "metadata": {"title": "Sort By"},
-                "links": [
-                    _facet_link(url(query, lang, copyrighted, audiobook, "downloads", "desc"), "Most Popular", sort == "downloads" or not sort),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "relevance", ""), "Relevance", sort == "relevance"),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "title", "asc"), "Title (A-Z)", sort == "title"),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "author", "asc"), "Author (A-Z)", sort == "author"),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "random", ""), "Random", sort == "random"),
-                ]
-            },
-        ]
-        
-        # Add top subjects if available
-        if top_subjects:
-            facets.append({
-                "metadata": {"title": "Top Subjects in Results"},
-                "links": [
-                    {
-                        "href": f"/opds/subjects?id={s['id']}",
-                        "type": "application/opds+json",
-                        "title": f"{s['name']} ({s['count']})"
-                    }
-                    for s in top_subjects
-                ]
-            })
-        
-        facets.extend([
-            {
-                "metadata": {"title": "Copyright Status"},
-                "links": [
-                    _facet_link(url(query, lang, "", audiobook, sort, sort_order), "Any", not copyrighted),
-                    _facet_link(url(query, lang, "false", audiobook, sort, sort_order), "Public Domain", copyrighted == "false"),
-                    _facet_link(url(query, lang, "true", audiobook, sort, sort_order), "Copyrighted", copyrighted == "true"),
-                ]
-            },
-            {
-                "metadata": {"title": "Format"},
-                "links": [
-                    _facet_link(url(query, lang, copyrighted, "", sort, sort_order), "Any", not audiobook),
-                    _facet_link(url(query, lang, copyrighted, "false", sort, sort_order), "Text", audiobook == "false"),
-                    _facet_link(url(query, lang, copyrighted, "true", sort, sort_order), "Audiobook", audiobook == "true"),
-                ]
-            },
-            {
-                "metadata": {"title": "Language"},
-                "links": [_facet_link(url(query, "", copyrighted, audiobook, sort, sort_order), "Any", not lang)] + [
-                    _facet_link(url(query, item['code'], copyrighted, audiobook, sort, sort_order), item['label'], lang == item['code'])
-                    for item in LANGUAGE_LIST
-                ]
-            }
-        ])
-        
+                {
+                    "metadata": {"title": "Format"},
+                    "links": [
+                        _facet_link(
+                            url(query, lang, copyrighted, "", sort, sort_order),
+                            "Any",
+                            not audiobook,
+                        ),
+                        _facet_link(
+                            url(query, lang, copyrighted, "false", sort, sort_order),
+                            "Text",
+                            audiobook == "false",
+                        ),
+                        _facet_link(
+                            url(query, lang, copyrighted, "true", sort, sort_order),
+                            "Audiobook",
+                            audiobook == "true",
+                        ),
+                    ],
+                },
+                {
+                    "metadata": {"title": "Language"},
+                    "links": [
+                        _facet_link(
+                            url(query, "", copyrighted, audiobook, sort, sort_order),
+                            "Any",
+                            not lang,
+                        )
+                    ]
+                    + [
+                        _facet_link(
+                            url(
+                                query,
+                                item["code"],
+                                copyrighted,
+                                audiobook,
+                                sort,
+                                sort_order,
+                            ),
+                            item["label"],
+                            lang == item["code"],
+                        )
+                        for item in LANGUAGE_LIST
+                    ],
+                },
+            ]
+        )
         return facets
 
+    # ---------- Subjects ----------
     @cherrypy.expose
-    @cherrypy.tools.json_out()
-    def subjects(self, id=None, page=1, limit=28, query="", lang="", copyrighted="", audiobook="", sort="", sort_order=""):
-        """
-        Subject navigation with search/filtering support.
-        
-        Without id: lists top subjects by book count
-        With id: returns books with that subject with full search/filtering
-        """
+    @cherrypy.tools.json_out()  # type: ignore[attr-defined]
+    def subjects(
+        self,
+        id: int | None = None,
+        page: int = 1,
+        limit: int = 28,
+        query: str = "",
+        lang: str = "",
+        copyrighted: str = "",
+        audiobook: str = "",
+        sort: str = "",
+        sort_order: str = "",
+    ):
+        """Subject navigation and detail (subject -> books)."""
         try:
             page = max(1, int(page))
             limit = max(1, min(100, int(limit)))
         except (ValueError, TypeError):
             page, limit = 1, 28
-        
+
+        # Detail view for a subject id -> books + facets
         if id is not None:
-            # Return books with this subject with search/filtering support
             try:
                 subject_id = int(id)
             except (ValueError, TypeError):
                 raise cherrypy.HTTPError(400, "Invalid subject ID")
-            
-            # Get subject name (fast single lookup instead of loading all subjects)
-            subject_name = self.fts.get_subject_name(subject_id) or f"Subject {subject_id}"
-            
-            # Build query with filtering
+
+            subject_name = (
+                self.fts.get_subject_name(subject_id) or f"Subject {subject_id}"
+            )
             try:
                 q = self.fts.query(crosswalk=Crosswalk.OPDS)
                 q.subject_id(subject_id)
-                
-                # Apply optional search
+
                 if query.strip():
-                    search_field, search_type = _parse_field("keyword")
-                    q.search(query, field=search_field, search_type=search_type)
-                
-                # Apply filters
+                    sf, st = _parse_field("keyword")
+                    q.search(query, field=sf, search_type=st)
+
                 if lang:
                     q.lang(lang)
                 if copyrighted == "true":
@@ -846,99 +1005,114 @@ class API:
                     q.audiobook()
                 elif audiobook == "false":
                     q.text_only()
-                
-                # Apply sorting
+
                 if sort in _VALID_SORTS:
-                    direction = SortDirection.ASC if sort_order == "asc" else SortDirection.DESC if sort_order == "desc" else None
+                    direction = (
+                        SortDirection.ASC
+                        if sort_order == "asc"
+                        else SortDirection.DESC
+                        if sort_order == "desc"
+                        else None
+                    )
                     q.order_by(OrderBy(sort), direction)
                 elif query.strip():
                     q.order_by(OrderBy.RELEVANCE)
                 else:
                     q.order_by(OrderBy.DOWNLOADS)
-                
+
                 q[page, limit]
                 result = self.fts.execute(q)
-                
             except Exception as e:
                 cherrypy.log(f"Subject browse error: {e}")
                 raise cherrypy.HTTPError(500, "Browse failed")
-            
-            # Build URL helper
-            def build_url(q_param, pg, lim, lng, cr, ab, srt, srt_ord):
+
+            def build_url(p: int) -> str:
                 params = {
-                    "id": subject_id, "query": q_param, "page": pg, "limit": lim,
-                    "lang": lng, "copyrighted": cr, "audiobook": ab,
-                    "sort": srt, "sort_order": srt_ord
+                    "id": subject_id,
+                    "query": query,
+                    "page": p,
+                    "limit": limit,
+                    "lang": lang,
+                    "copyrighted": copyrighted,
+                    "audiobook": audiobook,
+                    "sort": sort,
+                    "sort_order": sort_order,
                 }
                 return _url_with_params("/opds/subjects", params)
-            
-            self_href = build_url(query, page, limit, lang, copyrighted, audiobook, sort, sort_order)
-            
-            # Build facets for filtering
-            facets = self._build_subject_facets(subject_id, query, limit, lang, copyrighted, audiobook, sort, sort_order)
-            
+
+            self_href = build_url(result["page"])
+            facets = self._build_subject_facets(
+                subject_id, query, limit, lang, copyrighted, audiobook, sort, sort_order
+            )
+
             feed = {
                 "metadata": {
                     "title": subject_name,
                     "numberOfItems": result["total"],
                     "itemsPerPage": result["page_size"],
-                    "currentPage": result["page"]
+                    "currentPage": result["page"],
                 },
                 "links": [
                     {"rel": "self", "href": self_href, "type": "application/opds+json"},
                     {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
-                    {"rel": "up", "href": "/opds/subjects", "type": "application/opds+json"},
-                    {"rel": "search", "href": f"/opds/subjects?id={subject_id}{{&query,lang,sort,copyrighted,audiobook}}", "type": "application/opds+json", "templated": True}
+                    {
+                        "rel": "up",
+                        "href": "/opds/subjects",
+                        "type": "application/opds+json",
+                    },
+                    {
+                        "rel": "search",
+                        "href": f"/opds/subjects?id={subject_id}{{&query,lang,sort,copyrighted,audiobook}}",
+                        "type": "application/opds+json",
+                        "templated": True,
+                    },
                 ],
                 "publications": result["results"],
-                "facets": facets
+                "facets": facets,
             }
-            
-            # Add pagination links
-            if result["page"] > 1:
-                feed["links"].append({"rel": "first", "href": build_url(query, 1, limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-                feed["links"].append({"rel": "previous", "href": build_url(query, result['page'] - 1, limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-            if result["page"] < result["total_pages"]:
-                feed["links"].append({"rel": "next", "href": build_url(query, result['page'] + 1, limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-                feed["links"].append({"rel": "last", "href": build_url(query, result['total_pages'], limit, lang, copyrighted, audiobook, sort, sort_order), "type": "application/opds+json"})
-            
+            self._append_pagination_links(feed["links"], build_url, result)
             return feed
-        
-        # List top subjects
+
+        # No id -> list top subjects for navigation
         subjects = self.fts.list_subjects()
-        # Sort by book count descending
-        subjects.sort(key=lambda x: x['book_count'], reverse=True)
-        
+        subjects.sort(key=lambda x: x["book_count"], reverse=True)
         navigation = [
             {
                 "href": f"/opds/subjects?id={s['id']}",
                 "title": f"{s['name']} ({s['book_count']})",
                 "type": "application/opds+json",
-                "rel": "http://opds-spec.org/acquisition"
+                "rel": "http://opds-spec.org/acquisition",
             }
-            for s in subjects[:100]  # Limit to top 100 for navigation
+            for s in subjects[:100]
         ]
-        
         return {
-            "metadata": {
-                "title": "Subjects",
-                "numberOfItems": len(subjects)
-            },
+            "metadata": {"title": "Subjects", "numberOfItems": len(subjects)},
             "links": [
-                {"rel": "self", "href": "/opds/subjects", "type": "application/opds+json"},
+                {
+                    "rel": "self",
+                    "href": "/opds/subjects",
+                    "type": "application/opds+json",
+                },
                 {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
-                {"rel": "up", "href": "/opds/", "type": "application/opds+json"}
+                {"rel": "up", "href": "/opds/", "type": "application/opds+json"},
             ],
-            "navigation": navigation
+            "navigation": navigation,
         }
-    
-    def _build_subject_facets(self, subject_id, query, limit, lang, copyrighted, audiobook, sort, sort_order):
-        """Build facets for subject browse."""
+
+    def _build_subject_facets(
+        self, subject_id, query, limit, lang, copyrighted, audiobook, sort, sort_order
+    ):
         def url(q, lng, cr, ab, srt, srt_ord):
             params = {
-                "id": subject_id, "query": q, "page": 1, "limit": limit,
-                "lang": lng, "copyrighted": cr, "audiobook": ab,
-                "sort": srt, "sort_order": srt_ord
+                "id": subject_id,
+                "query": q,
+                "page": 1,
+                "limit": limit,
+                "lang": lng,
+                "copyrighted": cr,
+                "audiobook": ab,
+                "sort": srt,
+                "sort_order": srt_ord,
             }
             return _url_with_params("/opds/subjects", params)
 
@@ -946,119 +1120,119 @@ class API:
             {
                 "metadata": {"title": "Sort By"},
                 "links": [
-                    _facet_link(url(query, lang, copyrighted, audiobook, "downloads", "desc"), "Most Popular", sort == "downloads" or not sort),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "relevance", ""), "Relevance", sort == "relevance"),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "title", "asc"), "Title (A-Z)", sort == "title"),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "author", "asc"), "Author (A-Z)", sort == "author"),
-                    _facet_link(url(query, lang, copyrighted, audiobook, "random", ""), "Random", sort == "random"),
-                ]
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "downloads", "desc"),
+                        "Most Popular",
+                        sort == "downloads" or not sort,
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "relevance", ""),
+                        "Relevance",
+                        sort == "relevance",
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "title", "asc"),
+                        "Title (A-Z)",
+                        sort == "title",
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "author", "asc"),
+                        "Author (A-Z)",
+                        sort == "author",
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, audiobook, "random", ""),
+                        "Random",
+                        sort == "random",
+                    ),
+                ],
             },
             {
                 "metadata": {"title": "Copyright Status"},
                 "links": [
-                    _facet_link(url(query, lang, "", audiobook, sort, sort_order), "Any", not copyrighted),
-                    _facet_link(url(query, lang, "false", audiobook, sort, sort_order), "Public Domain", copyrighted == "false"),
-                    _facet_link(url(query, lang, "true", audiobook, sort, sort_order), "Copyrighted", copyrighted == "true"),
-                ]
+                    _facet_link(
+                        url(query, lang, "", audiobook, sort, sort_order),
+                        "Any",
+                        not copyrighted,
+                    ),
+                    _facet_link(
+                        url(query, lang, "false", audiobook, sort, sort_order),
+                        "Public Domain",
+                        copyrighted == "false",
+                    ),
+                    _facet_link(
+                        url(query, lang, "true", audiobook, sort, sort_order),
+                        "Copyrighted",
+                        copyrighted == "true",
+                    ),
+                ],
             },
             {
                 "metadata": {"title": "Format"},
                 "links": [
-                    _facet_link(url(query, lang, copyrighted, "", sort, sort_order), "Any", not audiobook),
-                    _facet_link(url(query, lang, copyrighted, "false", sort, sort_order), "Text", audiobook == "false"),
-                    _facet_link(url(query, lang, copyrighted, "true", sort, sort_order), "Audiobook", audiobook == "true"),
-                ]
+                    _facet_link(
+                        url(query, lang, copyrighted, "", sort, sort_order),
+                        "Any",
+                        not audiobook,
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, "false", sort, sort_order),
+                        "Text",
+                        audiobook == "false",
+                    ),
+                    _facet_link(
+                        url(query, lang, copyrighted, "true", sort, sort_order),
+                        "Audiobook",
+                        audiobook == "true",
+                    ),
+                ],
             },
             {
                 "metadata": {"title": "Language"},
-                "links": [_facet_link(url(query, "", copyrighted, audiobook, sort, sort_order), "Any", not lang)] + [
-                    _facet_link(url(query, item['code'], copyrighted, audiobook, sort, sort_order), item['label'], lang == item['code'])
-                    for item in LANGUAGE_LIST
+                "links": [
+                    _facet_link(
+                        url(query, "", copyrighted, audiobook, sort, sort_order),
+                        "Any",
+                        not lang,
+                    )
                 ]
-            }
+                + [
+                    _facet_link(
+                        url(
+                            query,
+                            item["code"],
+                            copyrighted,
+                            audiobook,
+                            sort,
+                            sort_order,
+                        ),
+                        item["label"],
+                        lang == item["code"],
+                    )
+                    for item in LANGUAGE_LIST
+                ],
+            },
         ]
 
-    def _build_url(self, query, page, limit, field, lang, copyrighted, audiobook, sort, sort_order, locc, **overrides):
-        """Build filter URL with optional parameter overrides."""
-        params = {
-            "query": query, "page": page, "limit": limit, "field": field,
-            "lang": lang, "copyrighted": copyrighted, "audiobook": audiobook,
-            "sort": sort, "sort_order": sort_order, "locc": locc,
-        }
-        params.update(overrides)
-        return _url_with_params("/opds/search", params)
-
-    def _build_facets(self, query, limit, field, lang, copyrighted, audiobook, sort, sort_order, locc, top_subjects=None):
-        """Build facet navigation links per OPDS 2.0 spec."""
-        url = self._build_url
-        
-        facets = [
-            {
-                "metadata": {"title": "Sort By"},
-                "links": [
-                    _facet_link(url(query, 1, limit, field, lang, copyrighted, audiobook, "downloads", "desc", locc), "Most Popular", sort == "downloads" or not sort),
-                    _facet_link(url(query, 1, limit, field, lang, copyrighted, audiobook, "relevance", "", locc), "Relevance", sort == "relevance"),
-                    _facet_link(url(query, 1, limit, field, lang, copyrighted, audiobook, "title", "asc", locc), "Title (A-Z)", sort == "title"),
-                    _facet_link(url(query, 1, limit, field, lang, copyrighted, audiobook, "author", "asc", locc), "Author (A-Z)", sort == "author"),
-                    _facet_link(url(query, 1, limit, field, lang, copyrighted, audiobook, "random", "", locc), "Random", sort == "random"),
-                ]
-            },
-        ]
-        
-        # Add dynamic top subjects facet ABOVE broad genre (if we have search results)
-        if top_subjects:
-            facets.append({
-                "metadata": {"title": "Top Subjects in Results"},
-                "links": [
-                    {
-                        "href": f"/opds/subjects?id={s['id']}",
-                        "type": "application/opds+json",
-                        "title": f"{s['name']} ({s['count']})"
-                    }
-                    for s in top_subjects
-                ]
-            })
-        
-        # Broad Genre after Top Subjects
-        facets.append({
-            "metadata": {"title": "Broad Genre"},
-            "links": [_facet_link(url(query, 1, limit, field, lang, copyrighted, audiobook, sort, sort_order, ""), "Any", not locc)] + [
-                _facet_link(url(query, 1, limit, field, lang, copyrighted, audiobook, sort, sort_order, item['code']), item['label'], locc == item['code'])
-                for item in LOCC_TOP
-            ]
-        })
-        
-        facets.extend([
-            {
-                "metadata": {"title": "Copyright Status"},
-                "links": [
-                    _facet_link(url(query, 1, limit, field, lang, "", audiobook, sort, sort_order, locc), "Any", not copyrighted),
-                    _facet_link(url(query, 1, limit, field, lang, "false", audiobook, sort, sort_order, locc), "Public Domain", copyrighted == "false"),
-                    _facet_link(url(query, 1, limit, field, lang, "true", audiobook, sort, sort_order, locc), "Copyrighted", copyrighted == "true"),
-                ]
-            },
-            {
-                "metadata": {"title": "Format"},
-                "links": [
-                    _facet_link(url(query, 1, limit, field, lang, copyrighted, "", sort, sort_order, locc), "Any", not audiobook),
-                    _facet_link(url(query, 1, limit, field, lang, copyrighted, "false", sort, sort_order, locc), "Text", audiobook == "false"),
-                    _facet_link(url(query, 1, limit, field, lang, copyrighted, "true", sort, sort_order, locc), "Audiobook", audiobook == "true"),
-                ]
-            },
-            {
-                "metadata": {"title": "Language"},
-                "links": [_facet_link(url(query, 1, limit, field, "", copyrighted, audiobook, sort, sort_order, locc), "Any", not lang)] + [
-                    _facet_link(url(query, 1, limit, field, item['code'], copyrighted, audiobook, sort, sort_order, locc), item['label'], lang == item['code'])
-                    for item in LANGUAGE_LIST
-                ]
-            }
-        ])
-        
-        return facets
-
+    # ---------- Search ----------
     @cherrypy.expose
-    @cherrypy.tools.json_out()
-    def search(self, query="", page=1, limit=28, field="keyword", lang="", copyrighted="", audiobook="", sort="", sort_order="", locc=""):
+    @cherrypy.tools.json_out()  # type: ignore[attr-defined]
+    def search(
+        self,
+        query: str = "",
+        page: int = 1,
+        limit: int = 28,
+        field: str = "keyword",
+        lang: str = "",
+        copyrighted: str = "",
+        audiobook: str = "",
+        sort: str = "",
+        sort_order: str = "",
+        locc: str = "",
+    ):
+        """
+        Full-text search with facets. Keeps behavior consistent with existing endpoints.
+        """
         try:
             page = max(1, int(page))
             limit = max(1, min(100, int(limit)))
@@ -1066,22 +1240,26 @@ class API:
             page, limit = 1, 28
 
         search_field, search_type = _parse_field(field)
-        
         try:
             q = self.fts.query(crosswalk=Crosswalk.OPDS)
-            
+
             if query.strip():
                 q.search(query, field=search_field, search_type=search_type)
-            
+
             if sort in _VALID_SORTS:
-                direction = SortDirection.ASC if sort_order == "asc" else SortDirection.DESC if sort_order == "desc" else None
+                direction = (
+                    SortDirection.ASC
+                    if sort_order == "asc"
+                    else SortDirection.DESC
+                    if sort_order == "desc"
+                    else None
+                )
                 q.order_by(OrderBy(sort), direction)
             elif query.strip():
-                # Both FTS and Fuzzy use relevance ranking for searches
                 q.order_by(OrderBy.RELEVANCE)
             else:
                 q.order_by(OrderBy.DOWNLOADS)
-            
+
             if lang:
                 q.lang(lang)
             if copyrighted == "true":
@@ -1097,63 +1275,435 @@ class API:
 
             q[page, limit]
             result = self.fts.execute(q)
-            
-            # Get top subjects for this query (for dynamic facets)
+
+            # dynamic top subjects for facets if filters/search applied
             top_subjects = None
-            if query.strip() or locc or lang:  # Only fetch for filtered queries
-                # Build a fresh query without pagination for subject counting
-                q_for_subjects = self.fts.query()
+            if query.strip() or locc or lang:
+                q_sub = self.fts.query()
                 if query.strip():
-                    q_for_subjects.search(query, field=search_field, search_type=search_type)
+                    q_sub.search(query, field=search_field, search_type=search_type)
                 if lang:
-                    q_for_subjects.lang(lang)
+                    q_sub.lang(lang)
                 if copyrighted == "true":
-                    q_for_subjects.copyrighted()
+                    q_sub.copyrighted()
                 elif copyrighted == "false":
-                    q_for_subjects.public_domain()
+                    q_sub.public_domain()
                 if audiobook == "true":
-                    q_for_subjects.audiobook()
+                    q_sub.audiobook()
                 elif audiobook == "false":
-                    q_for_subjects.text_only()
+                    q_sub.text_only()
                 if locc:
-                    q_for_subjects.locc(locc)
-                
-                top_subjects = self.fts.get_top_subjects_for_query(q_for_subjects, limit=15, max_books=500)
-            
+                    q_sub.locc(locc)
+                top_subjects = self.fts.get_top_subjects_for_query(
+                    q_sub, limit=15, max_books=500
+                )
         except Exception as e:
             cherrypy.log(f"Search error: {e}")
             raise cherrypy.HTTPError(500, "Search failed")
 
-        url = self._build_url
-        self_href = url(query, page, limit, field, lang, copyrighted, audiobook, sort, sort_order, locc)
-        
+        def url(p: int) -> str:
+            return self._build_url(
+                query,
+                p,
+                limit,
+                field,
+                lang,
+                copyrighted,
+                audiobook,
+                sort,
+                sort_order,
+                locc,
+            )
+
+        self_href = url(result["page"])
+
         feed = {
             "metadata": {
                 "title": "Gutenberg Search Results",
                 "numberOfItems": result["total"],
                 "itemsPerPage": result["page_size"],
-                "currentPage": result["page"]
+                "currentPage": result["page"],
             },
             "links": [
                 {"rel": "self", "href": self_href, "type": "application/opds+json"},
                 {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
                 {"rel": "up", "href": "/opds/", "type": "application/opds+json"},
-                {"rel": "search", "href": "/opds/search{?query,field,lang,sort,copyrighted,audiobook,locc}", "type": "application/opds+json", "templated": True}
+                {
+                    "rel": "search",
+                    "href": "/opds/search{?query,field,lang,sort,copyrighted,audiobook,locc}",
+                    "type": "application/opds+json",
+                    "templated": True,
+                },
             ],
             "publications": result["results"],
-            "facets": self._build_facets(query, limit, field, lang, copyrighted, audiobook, sort, sort_order, locc, top_subjects)
+            "facets": self._build_facets(
+                query,
+                limit,
+                field,
+                lang,
+                copyrighted,
+                audiobook,
+                sort,
+                sort_order,
+                locc,
+                top_subjects,
+            ),
         }
 
-        if result["page"] > 1:
-            feed["links"].append({"rel": "first", "href": url(query, 1, limit, field, lang, copyrighted, audiobook, sort, sort_order, locc), "type": "application/opds+json"})
-            feed["links"].append({"rel": "previous", "href": url(query, result['page'] - 1, limit, field, lang, copyrighted, audiobook, sort, sort_order, locc), "type": "application/opds+json"})
-        
-        if result["page"] < result["total_pages"]:
-            feed["links"].append({"rel": "next", "href": url(query, result['page'] + 1, limit, field, lang, copyrighted, audiobook, sort, sort_order, locc), "type": "application/opds+json"})
-            feed["links"].append({"rel": "last", "href": url(query, result['total_pages'], limit, field, lang, copyrighted, audiobook, sort, sort_order, locc), "type": "application/opds+json"})
-
+        self._append_pagination_links(feed["links"], url, result)
         return feed
+
+    # ---------- URL / facet helpers for search ----------
+    def _build_url(
+        self,
+        query,
+        page,
+        limit,
+        field,
+        lang,
+        copyrighted,
+        audiobook,
+        sort,
+        sort_order,
+        locc,
+        **overrides,
+    ):
+        params = {
+            "query": query,
+            "page": page,
+            "limit": limit,
+            "field": field,
+            "lang": lang,
+            "copyrighted": copyrighted,
+            "audiobook": audiobook,
+            "sort": sort,
+            "sort_order": sort_order,
+            "locc": locc,
+        }
+        params.update(overrides)
+        return _url_with_params("/opds/search", params)
+
+    def _build_facets(
+        self,
+        query,
+        limit,
+        field,
+        lang,
+        copyrighted,
+        audiobook,
+        sort,
+        sort_order,
+        locc,
+        top_subjects=None,
+    ):
+        url = self._build_url
+        facets = [
+            {
+                "metadata": {"title": "Sort By"},
+                "links": [
+                    _facet_link(
+                        url(
+                            query,
+                            1,
+                            limit,
+                            field,
+                            lang,
+                            copyrighted,
+                            audiobook,
+                            "downloads",
+                            "desc",
+                            locc,
+                        ),
+                        "Most Popular",
+                        sort == "downloads" or not sort,
+                    ),
+                    _facet_link(
+                        url(
+                            query,
+                            1,
+                            limit,
+                            field,
+                            lang,
+                            copyrighted,
+                            audiobook,
+                            "relevance",
+                            "",
+                            locc,
+                        ),
+                        "Relevance",
+                        sort == "relevance",
+                    ),
+                    _facet_link(
+                        url(
+                            query,
+                            1,
+                            limit,
+                            field,
+                            lang,
+                            copyrighted,
+                            audiobook,
+                            "title",
+                            "asc",
+                            locc,
+                        ),
+                        "Title (A-Z)",
+                        sort == "title",
+                    ),
+                    _facet_link(
+                        url(
+                            query,
+                            1,
+                            limit,
+                            field,
+                            lang,
+                            copyrighted,
+                            audiobook,
+                            "author",
+                            "asc",
+                            locc,
+                        ),
+                        "Author (A-Z)",
+                        sort == "author",
+                    ),
+                    _facet_link(
+                        url(
+                            query,
+                            1,
+                            limit,
+                            field,
+                            lang,
+                            copyrighted,
+                            audiobook,
+                            "random",
+                            "",
+                            locc,
+                        ),
+                        "Random",
+                        sort == "random",
+                    ),
+                ],
+            },
+        ]
+
+        if top_subjects:
+            facets.append(
+                {
+                    "metadata": {"title": "Top Subjects in Results"},
+                    "links": [
+                        {
+                            "href": f"/opds/subjects?id={s['id']}",
+                            "type": "application/opds+json",
+                            "title": f"{s['name']} ({s['count']})",
+                        }
+                        for s in top_subjects
+                    ],
+                }
+            )
+
+        facets.append(
+            {
+                "metadata": {"title": "Broad Genre"},
+                "links": [
+                    _facet_link(
+                        url(
+                            query,
+                            1,
+                            limit,
+                            field,
+                            lang,
+                            copyrighted,
+                            audiobook,
+                            sort,
+                            sort_order,
+                            "",
+                        ),
+                        "Any",
+                        not locc,
+                    )
+                ]
+                + [
+                    _facet_link(
+                        url(
+                            query,
+                            1,
+                            limit,
+                            field,
+                            lang,
+                            copyrighted,
+                            audiobook,
+                            sort,
+                            sort_order,
+                            item.code,
+                        ),
+                        item.label,
+                        locc == item.code,
+                    )
+                    for item in LoCCMainClass
+                ],
+            }
+        )
+
+        facets.extend(
+            [
+                {
+                    "metadata": {"title": "Copyright Status"},
+                    "links": [
+                        _facet_link(
+                            url(
+                                query,
+                                1,
+                                limit,
+                                field,
+                                lang,
+                                "",
+                                audiobook,
+                                sort,
+                                sort_order,
+                                locc,
+                            ),
+                            "Any",
+                            not copyrighted,
+                        ),
+                        _facet_link(
+                            url(
+                                query,
+                                1,
+                                limit,
+                                field,
+                                lang,
+                                "false",
+                                audiobook,
+                                sort,
+                                sort_order,
+                                locc,
+                            ),
+                            "Public Domain",
+                            copyrighted == "false",
+                        ),
+                        _facet_link(
+                            url(
+                                query,
+                                1,
+                                limit,
+                                field,
+                                lang,
+                                "true",
+                                audiobook,
+                                sort,
+                                sort_order,
+                                locc,
+                            ),
+                            "Copyrighted",
+                            copyrighted == "true",
+                        ),
+                    ],
+                },
+                {
+                    "metadata": {"title": "Format"},
+                    "links": [
+                        _facet_link(
+                            url(
+                                query,
+                                1,
+                                limit,
+                                field,
+                                lang,
+                                copyrighted,
+                                "",
+                                sort,
+                                sort_order,
+                                locc,
+                            ),
+                            "Any",
+                            not audiobook,
+                        ),
+                        _facet_link(
+                            url(
+                                query,
+                                1,
+                                limit,
+                                field,
+                                lang,
+                                copyrighted,
+                                "false",
+                                sort,
+                                sort_order,
+                                locc,
+                            ),
+                            "Text",
+                            audiobook == "false",
+                        ),
+                        _facet_link(
+                            url(
+                                query,
+                                1,
+                                limit,
+                                field,
+                                lang,
+                                copyrighted,
+                                "true",
+                                sort,
+                                sort_order,
+                                locc,
+                            ),
+                            "Audiobook",
+                            audiobook == "true",
+                        ),
+                    ],
+                },
+                {
+                    "metadata": {"title": "Language"},
+                    "links": [
+                        _facet_link(
+                            url(
+                                query,
+                                1,
+                                limit,
+                                field,
+                                "",
+                                copyrighted,
+                                audiobook,
+                                sort,
+                                sort_order,
+                                locc,
+                            ),
+                            "Any",
+                            not lang,
+                        )
+                    ]
+                    + [
+                        _facet_link(
+                            url(
+                                query,
+                                1,
+                                limit,
+                                field,
+                                item["code"],
+                                copyrighted,
+                                audiobook,
+                                sort,
+                                sort_order,
+                                locc,
+                            ),
+                            item["label"],
+                            lang == item["code"],
+                        )
+                        for item in LANGUAGE_LIST
+                    ],
+                },
+            ]
+        )
+        return facets
 
 
 if __name__ == "__main__":
-    cherrypy.quickstart(API(), "/opds")
+    cherrypy.config.update(
+        {"server.socket_host": "127.0.0.1", "server.socket_port": 8080}
+    )
+    api = API()
+    cherrypy.tree.mount(api, "/opds", {"/": {}})
+    try:
+        cherrypy.engine.start()
+        cherrypy.engine.block()
+    except KeyboardInterrupt:
+        cherrypy.engine.exit()

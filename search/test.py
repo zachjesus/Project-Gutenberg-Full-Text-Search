@@ -1,6 +1,6 @@
 import time
 
-from constants import (
+from .constants import (
     Crosswalk,
     Encoding,
     FileType,
@@ -10,7 +10,7 @@ from constants import (
     SearchField,
     SearchType,
 )
-from full_text_search import FullTextSearch
+from .full_text_search import FullTextSearch
 
 s = FullTextSearch()
 

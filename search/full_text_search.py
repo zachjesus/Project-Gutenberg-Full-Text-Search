@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Tuple, Union
 
-from constants import (
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+
+from .constants import (
     Crosswalk,
     Encoding,
     FileType,
@@ -14,10 +17,8 @@ from constants import (
     SearchType,
     SortDirection,
 )
-from crosswalks import CROSSWALK_MAP
-from helpers import get_locc_children
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from .crosswalks import CROSSWALK_MAP
+from .helpers import get_locc_children
 
 __all__ = [
     "Config",
@@ -205,7 +206,7 @@ class SearchQuery:
             code = code.code
         else:
             code = str(code).upper()
-        
+
         return self.add_filter(
             "EXISTS (SELECT 1 FROM mn_books_loccs mbl JOIN loccs lc ON lc.pk = mbl.fk_loccs WHERE mbl.fk_books = book_id AND lc.pk LIKE {})",
             f"{code}%",

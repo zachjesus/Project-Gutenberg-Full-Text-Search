@@ -1,8 +1,8 @@
 import html
 from typing import Any
 
-from constants import Crosswalk
-from helpers import format_dict_result
+from .constants import Crosswalk
+from .helpers import format_dict_result
 
 
 @format_dict_result

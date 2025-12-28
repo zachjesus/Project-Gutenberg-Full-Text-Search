@@ -2,9 +2,10 @@ import re
 from functools import wraps
 from typing import Any, Callable
 
-from constants import LoCCMainClass
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+from .constants import LoCCMainClass
 
 _RE_MARC_SUBFIELD = re.compile(r"\$[a-z]")
 _RE_MARC_SPSEP = re.compile(r"[\n ](,|:)([A-Za-z0-9])")
@@ -144,7 +145,7 @@ def get_locc_children(parent: LoCCMainClass | str, session: Session) -> list[dic
 
     sql = text(
         """
-        SELECT lc.pk AS code, lc.label AS label,
+        SELECT lc.pk AS code, lc.locc AS label,
                 EXISTS (
                     SELECT 1 FROM loccs lc2 WHERE lc2.pk LIKE lc.pk || '%' AND lc2.pk != lc.pk
                 ) AS has_children
