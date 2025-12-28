@@ -294,7 +294,7 @@ class API:
                 {"rel": "start", "href": "/opds/", "type": "application/opds+json"},
                 {
                     "rel": "search",
-                    "href": "/opds/search{?query,field,lang,sort,copyrighted,audiobook,locc}",
+                    "href": "/opds/search?field=keyword{?query}",
                     "type": "application/opds+json",
                     "templated": True,
                 },
@@ -510,7 +510,7 @@ class API:
                 {"rel": "up", "href": up_href, "type": "application/opds+json"},
                 {
                     "rel": "search",
-                    "href": f"/opds/bookshelves?id={bookshelf_id}{{&query,lang,sort,copyrighted,audiobook}}",
+                    "href": f"/opds/bookshelves?id={bookshelf_id}&field=keyword{{?query}}",
                     "type": "application/opds+json",
                     "templated": True,
                 },
@@ -790,7 +790,7 @@ class API:
                 {"rel": "up", "href": "/opds/loccs", "type": "application/opds+json"},
                 {
                     "rel": "search",
-                    "href": f"/opds/loccs?parent={parent}{{&query,lang,sort,copyrighted,audiobook}}",
+                    "href": f"/opds/loccs?parent={parent}&field=keyword{{?query}}",
                     "type": "application/opds+json",
                     "templated": True,
                 },
@@ -946,7 +946,7 @@ class API:
                 },
                 {
                     "rel": "search",
-                    "href": f"/opds/subjects?id={subject_id}{{&query,lang,sort,copyrighted,audiobook}}",
+                    "href": f"/opds/subjects?id={subject_id}&field=keyword{{?query}}",
                     "type": "application/opds+json",
                     "templated": True,
                 },
@@ -1046,7 +1046,7 @@ class API:
                 {"rel": "up", "href": "/opds/", "type": "application/opds+json"},
                 {
                     "rel": "search",
-                    "href": "/opds/search{?query,field,lang,sort,copyrighted,audiobook,locc}",
+                    "href": "/opds/search?field=keyword{?query}",
                     "type": "application/opds+json",
                     "templated": True,
                 },
