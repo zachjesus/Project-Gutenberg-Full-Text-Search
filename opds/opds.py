@@ -301,7 +301,7 @@ class API:
             ],
             "navigation": [
                 {
-                    "href": "/opds/search?field=fuzzy_keyword",
+                    "href": "/opds/search",
                     "title": "Search Fuzzy (Typo-Tolerant, Slower)",
                     "type": "application/opds+json",
                     "rel": "subsection",
@@ -1013,21 +1013,21 @@ class API:
             raise cherrypy.HTTPError(500, "Search failed")
 
         def url(p: int) -> str:
-            return _url_with_params(
-                "/opds/search",
-                {
-                    "query": query,
-                    "page": p,
-                    "limit": limit,
-                    "field": field,
-                    "lang": lang,
-                    "copyrighted": copyrighted,
-                    "audiobook": audiobook,
-                    "sort": sort,
-                    "sort_order": sort_order,
-                    "locc": locc,
-                },
-            )
+            params = {
+                "query": query,
+                "page": p,
+                "limit": limit,
+                "lang": lang,
+                "copyrighted": copyrighted,
+                "audiobook": audiobook,
+                "sort": sort,
+                "sort_order": sort_order,
+                "locc": locc,
+            }
+            # Only include field if it's not the default (keyword/fuzzy)
+            if field and field != "keyword":
+                params["field"] = field
+            return _url_with_params("/opds/search", params)
 
         feed = {
             "metadata": {
@@ -1046,7 +1046,7 @@ class API:
                 {"rel": "up", "href": "/opds/", "type": "application/opds+json"},
                 {
                     "rel": "search",
-                    "href": "/opds/search{?query}",
+                    "href": "/opds/search?field=fts_keyword{&query}" if field == "fts_keyword" else "/opds/search{?query}",
                     "type": "application/opds+json",
                     "templated": True,
                 },
