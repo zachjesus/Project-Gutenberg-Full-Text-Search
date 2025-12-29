@@ -14,7 +14,7 @@ A PostgreSQL-backed full-text search engine for Project Gutenberg and the new OP
 
 https://github.com/user-attachments/assets/4e75d60b-e6ca-4ba6-a72d-c112ecfef28f
 
-Video of server running on a server with 1GB ram and 1 core CPU. Search returns results with FULL metadata in around 20-30ms in most cases.
+Video of DB and Search Engine Interface running on a server with 1GB ram and 1 core CPU. Search returns results with FULL metadata in around 20-30ms in most cases even on minimal hardware.
 
 ## Requirements
 
