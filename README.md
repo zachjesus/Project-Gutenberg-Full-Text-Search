@@ -2,6 +2,20 @@
 
 A PostgreSQL-backed full-text search engine for Project Gutenberg and the new OPDS 2.0 catalog.
 
+<img width="1700" height="414" alt="image" src="https://github.com/user-attachments/assets/0d90690f-cb01-42c3-be9d-800f01857922" />
+
+<img width="1659" height="608" alt="image" src="https://github.com/user-attachments/assets/e701c1d6-9263-484b-bc07-6bedbc3dc399" />
+
+<img width="1648" height="964" alt="image" src="https://github.com/user-attachments/assets/3a0eee9e-e6c1-4854-aabf-2b0598576864" />
+
+<img width="1682" height="616" alt="image" src="https://github.com/user-attachments/assets/226f9562-679f-430e-9a48-cec4ff7d075b" />
+
+<img width="1409" height="904" alt="image" src="https://github.com/user-attachments/assets/e714f27d-9032-4dbe-8d07-b4b008bbd528" />
+
+https://github.com/user-attachments/assets/4e75d60b-e6ca-4ba6-a72d-c112ecfef28f
+
+Video of server running on a server with 1GB ram and 1 core CPU. Search returns results with FULL metadata in around 20-30ms in most cases.
+
 ## Requirements
 
 ### Python Dependencies
@@ -110,12 +124,12 @@ count = fts.count(fts.query().search("Shakespeare"))
 **FTS (Full-Text Search)** - Default, fastest option:
 - Uses PostgreSQL `websearch_to_tsquery` 
 - Supports boolean operators (see below)
-- Default sort: **Relevance** (fast with GIN indexes)
-- Best for: Precise searches, exact word matching
+- Default sort: **Relevance** 
+- Best for: Precise searches, exact word matching, speed
 
-**Fuzzy Search** - Typo-tolerant:
+**Fuzzy Search** - Typo-tolerant (slower but still fast):
 - Uses trigram similarity for typo tolerance
-- Default sort: **Downloads** (relevance ranking is slow)
+- Default sort: **Relevance** 
 - Best for: User input with potential misspellings
 
 ```python
@@ -180,7 +194,7 @@ q.downloads_lte(100)             # <= 100 downloads
 q.public_domain()                # copyrighted = 0
 q.copyrighted()                  # copyrighted = 1
 
-# By language (matches any language in multi-language books)
+# By language 
 q.lang(LanguageCode.EN)          # English
 q.lang(LanguageCode.DE)          # German
 
@@ -194,15 +208,15 @@ q.author_born_before(1700)
 q.author_died_after(1950)
 q.author_died_before(1800)
 
-# By release date (uses denormalized column - fast!)
+# By release date (
 q.released_after("2020-01-01")
 q.released_before("2000-01-01")
 
-# By classification (uses MN table - fast!)
+# By classification 
 q.locc(LoccClass.P)              # LoCC top-level class (prefix match)
 q.locc("PS")                     # Optional: narrower LoCC prefix match
 
-# By ID (uses MN tables - fast!)
+# By ID 
 q.author_id(53)                  # Mark Twain
 q.subject_id(1)                  # Uses mn_books_subjects
 q.bookshelf_id(68)               # Uses mn_books_bookshelves
@@ -236,18 +250,13 @@ result = fts.execute(
 from FullTextSearch import OrderBy, SortDirection
 
 q.order_by(OrderBy.RELEVANCE)                    # ts_rank_cd (FTS) or word_similarity (Fuzzy)
-q.order_by(OrderBy.DOWNLOADS)                    # Default for non-search queries
+q.order_by(OrderBy.DOWNLOADS)                   
 q.order_by(OrderBy.TITLE)
 q.order_by(OrderBy.AUTHOR)
-q.order_by(OrderBy.RELEASE_DATE)                 # Fast! Uses denormalized column
+q.order_by(OrderBy.RELEASE_DATE)                
 q.order_by(OrderBy.RANDOM)
 q.order_by(OrderBy.DOWNLOADS, SortDirection.ASC) # Explicit direction
 ```
-
-**Default sorting:**
-- **FTS with query**: Relevance (fast with GIN indexes)
-- **Fuzzy with query**: Downloads (relevance is slow for trigrams)
-- **No query**: Downloads
 
 ### Pagination
 
@@ -269,7 +278,7 @@ fts.query(Crosswalk.OPDS)   # OPDS 2.0 publication format
 fts.query(Crosswalk.CUSTOM) # Custom transformer (see below)
 ```
 
-### Custom Transformer
+### Custom Crosswalks
 
 ```python
 def my_format(row):
@@ -318,7 +327,7 @@ Server runs at `http://127.0.0.1:8080/opds/`
 GET /opds/
 ```
 Returns homepage with:
-- Navigation links (Search Fuzzy, Search FTS, Browse by LoCC, Most Popular, Recently Added, Random)
+- Navigation links (Search Fuzzy, Search FTS, Browse by LoCC, Bookshelf, Subjects Most Popular, Recently Added, Random)
 - Groups: All curated bookshelves with 20 sample publications each
 
 #### Search
@@ -375,17 +384,11 @@ Hierarchical navigation through Library of Congress Classification:
 #### Bookshelves
 ```
 GET /opds/bookshelves
-GET /opds/bookshelves?category=Literature
 GET /opds/bookshelves?id=644
 GET /opds/bookshelves?id=644&query=adventure
 ```
 
-Curated bookshelves organized by category:
-- Without params: Lists all categories
-- With `category`: Lists bookshelves in that category
-- With `id`: Shows books in that bookshelf with full search/filtering
-- Shows **Top Subjects** facet when viewing books
-- Search bar stays within the bookshelf context
+Curated bookshelves organized by category.
 
 #### Subjects
 ```
@@ -394,21 +397,16 @@ GET /opds/subjects?id=1
 GET /opds/subjects?id=1&query=novel
 ```
 
-Subject browsing:
-- Without `id`: Lists top 100 subjects by book count
-- With `id`: Shows books with that subject, supports search/filtering
-- Search bar stays within the subject context
+Lists top 50 or so subjects.
 
-#### Genres (Broad Genre)
+#### LOCC
 ```
 GET /opds/genres
 GET /opds/genres?code=P
 GET /opds/genres?code=P&query=poetry
 ```
 
-Broad genre browsing using top-level LoCC codes:
-- Without `code`: Lists all broad genres with book counts
-- With `code`: Shows books in that genre with search/filtering
+Allows users to explore the LOCC Heirarchy.  
 
 ### Facets (Dynamic Filters)
 
@@ -424,7 +422,7 @@ Facets appear on publication pages (search results, browse results) and provide 
 **Top Subjects in Results:**
 - Appears when query or filters are active
 - Shows up to 15 most common subjects in current results
-- Clicking a subject navigates to that subject page (facet disappears, no loop)
+- Clicking a subject navigates to that subject page (facet disappears)
 
 **Broad Genre:**
 - Library of Congress top-level classes
